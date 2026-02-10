@@ -1,11 +1,17 @@
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -20,10 +26,13 @@ class DashboardView(QWidget):
     sync_requested = Signal()
     settings_requested = Signal()
     refresh_device_requested = Signal()
+    refresh_users_requested = Signal()
+    create_user_requested = Signal(str, str, str, bool)
 
     def __init__(self) -> None:
         super().__init__()
         self._bambini_by_id: dict[str, Bambino] = {}
+        self._user_tab_index = -1
 
         self.connection_label = QLabel("Stato rete: -")
         self.device_label = QLabel("Dispositivo: -")
@@ -68,9 +77,62 @@ class DashboardView(QWidget):
         body.addLayout(left, 2)
         body.addLayout(actions, 1)
 
+        presenze_root = QVBoxLayout()
+        presenze_root.addLayout(top)
+        presenze_root.addLayout(body)
+        presenze_tab = QWidget()
+        presenze_tab.setLayout(presenze_root)
+
+        self.users_list_widget = QListWidget()
+        self.user_username_input = QLineEdit()
+        self.user_password_input = QLineEdit()
+        self.user_password_input.setEchoMode(QLineEdit.Password)
+        self.user_role_combo = QComboBox()
+        self.user_role_combo.addItem("Educatore", "EDUCATORE")
+        self.user_role_combo.addItem("Amministratore", "AMM_CENTRALE")
+        self.user_active_checkbox = QCheckBox("Attivo")
+        self.user_active_checkbox.setChecked(True)
+        self.create_user_button = QPushButton("Crea utente")
+        self.refresh_users_button = QPushButton("Aggiorna elenco")
+        self.users_status = QTextEdit()
+        self.users_status.setReadOnly(True)
+        self.users_status.setMaximumHeight(160)
+
+        self.refresh_users_button.clicked.connect(self.refresh_users_requested)
+        self.create_user_button.clicked.connect(self._emit_create_user)
+
+        user_form = QFormLayout()
+        user_form.addRow("Username", self.user_username_input)
+        user_form.addRow("Password", self.user_password_input)
+        user_form.addRow("Ruolo", self.user_role_combo)
+        user_form.addRow("Stato", self.user_active_checkbox)
+
+        user_actions = QHBoxLayout()
+        user_actions.addWidget(self.refresh_users_button)
+        user_actions.addStretch(1)
+        user_actions.addWidget(self.create_user_button)
+
+        user_form_group = QGroupBox("Nuovo utente")
+        user_form_group_layout = QVBoxLayout()
+        user_form_group_layout.addLayout(user_form)
+        user_form_group_layout.addLayout(user_actions)
+        user_form_group.setLayout(user_form_group_layout)
+
+        users_root = QVBoxLayout()
+        users_root.addWidget(QLabel("Utenti registrati"))
+        users_root.addWidget(self.users_list_widget)
+        users_root.addWidget(user_form_group)
+        users_root.addWidget(self.users_status)
+        users_tab = QWidget()
+        users_tab.setLayout(users_root)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(presenze_tab, "Presenze")
+        self._user_tab_index = self.tabs.addTab(users_tab, "Gestione utenti")
+        self.tabs.setTabVisible(self._user_tab_index, False)
+
         root = QVBoxLayout()
-        root.addLayout(top)
-        root.addLayout(body)
+        root.addWidget(self.tabs)
         self.setLayout(root)
 
     def set_bambini(self, bambini: list[Bambino]) -> None:
@@ -106,3 +168,38 @@ class DashboardView(QWidget):
 
     def set_pending_count(self, count: int) -> None:
         self.pending_label.setText(f"Pending sync: {count}")
+
+    def set_user_tab_visible(self, visible: bool) -> None:
+        if self._user_tab_index < 0:
+            return
+        self.tabs.setTabVisible(self._user_tab_index, visible)
+        if not visible and self.tabs.currentIndex() == self._user_tab_index:
+            self.tabs.setCurrentIndex(0)
+
+    def set_users(self, users: list[dict[str, str]]) -> None:
+        self.users_list_widget.clear()
+        for user in users:
+            groups = ", ".join(user.get("groups", []))
+            stato = "attivo" if user.get("attivo") else "disattivo"
+            role = user.get("role", "-")
+            label = f"{user.get('username', '-')}: {role} | {groups} | {stato}"
+            item = QListWidgetItem(label)
+            item.setData(1, user.get("id", ""))
+            self.users_list_widget.addItem(item)
+
+    def append_users_status(self, message: str) -> None:
+        self.users_status.append(message)
+
+    def clear_user_form(self) -> None:
+        self.user_username_input.clear()
+        self.user_password_input.clear()
+        self.user_role_combo.setCurrentIndex(0)
+        self.user_active_checkbox.setChecked(True)
+
+    def _emit_create_user(self) -> None:
+        self.create_user_requested.emit(
+            self.user_username_input.text().strip(),
+            self.user_password_input.text(),
+            str(self.user_role_combo.currentData()),
+            self.user_active_checkbox.isChecked(),
+        )

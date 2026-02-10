@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models import PresenceEventType
+from app.models import PresenceEventType, UserRole
 
 
 class LoginIn(BaseModel):
@@ -14,6 +14,13 @@ class LoginIn(BaseModel):
 class LoginOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class AuthMeOut(BaseModel):
+    id: uuid.UUID
+    username: str
+    role: UserRole
+    groups: list[str]
 
 
 class PresenceEventIn(BaseModel):
@@ -102,3 +109,20 @@ class DeviceClaimOut(BaseModel):
     nome: str
     sede_id: uuid.UUID
     sede_nome: str
+
+
+class UserCreateIn(BaseModel):
+    username: str
+    password: str
+    role: UserRole = UserRole.EDUCATORE
+    attivo: bool = True
+    sede_id: uuid.UUID | None = None
+
+
+class UserOut(BaseModel):
+    id: uuid.UUID
+    username: str
+    role: UserRole
+    groups: list[str]
+    attivo: bool
+    sede_id: uuid.UUID | None = None

@@ -50,6 +50,8 @@ class MainWindow(QMainWindow):
         self.dashboard.sync_requested.connect(self._sync_pending)
         self.dashboard.settings_requested.connect(self._open_settings)
         self.dashboard.refresh_device_requested.connect(self._refresh_device)
+        self.dashboard.refresh_users_requested.connect(self._on_refresh_users_requested)
+        self.dashboard.create_user_requested.connect(self._on_create_user_requested)
 
         self.sync_timer = QTimer(self)
         self.sync_timer.setInterval(30000)
@@ -285,9 +287,50 @@ class MainWindow(QMainWindow):
         self._update_login_health()
 
     def _post_login_refresh(self) -> None:
+        self._refresh_user_capabilities()
         self._refresh_device()
         self._on_search_requested("")
         self._sync_pending()
+
+    def _refresh_user_capabilities(self) -> None:
+        try:
+            profile = self.api.auth_me()
+        except httpx.HTTPError:
+            self.dashboard.set_user_tab_visible(False)
+            return
+
+        groups = {str(group).lower() for group in profile.get("groups", [])}
+        is_admin = "admin" in groups
+        self.dashboard.set_user_tab_visible(is_admin)
+        if is_admin:
+            self._on_refresh_users_requested()
+
+    def _on_refresh_users_requested(self) -> None:
+        try:
+            rows = self.api.list_users()
+            self.dashboard.set_users(rows)
+            self.dashboard.append_users_status(f"Utenti caricati: {len(rows)}")
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_users_status(f"Errore elenco utenti: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_users_status(f"Errore rete elenco utenti: {exc}")
+
+    def _on_create_user_requested(self, username: str, password: str, role: str, attivo: bool) -> None:
+        if not username or not password:
+            self.dashboard.append_users_status("Username e password obbligatori")
+            return
+
+        try:
+            created = self.api.create_user(username=username, password=password, role=role, attivo=attivo)
+            self.dashboard.append_users_status(
+                f"Utente creato: {created.get('username')} ({created.get('role')})"
+            )
+            self.dashboard.clear_user_form()
+            self._on_refresh_users_requested()
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_users_status(f"Errore creazione utente: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_users_status(f"Errore rete creazione utente: {exc}")
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(

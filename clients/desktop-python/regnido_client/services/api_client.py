@@ -76,6 +76,15 @@ class ApiClient:
         response.raise_for_status()
         return response.json()["access_token"]
 
+    def auth_me(self) -> dict[str, Any]:
+        response = httpx.get(
+            f"{self.base_url}/auth/me",
+            headers=self._headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def claim_device(self, activation_code: str) -> dict[str, Any]:
         response = httpx.post(
             f"{self.base_url}/devices/claim",
@@ -128,6 +137,30 @@ class ApiClient:
                 "nome": nome,
                 "attivo": True,
                 "activation_expires_minutes": activation_expires_minutes,
+            },
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def list_users(self) -> list[dict[str, Any]]:
+        response = httpx.get(
+            f"{self.base_url}/admin/users",
+            headers=self._headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return list(response.json())
+
+    def create_user(self, username: str, password: str, role: str = "EDUCATORE", attivo: bool = True) -> dict[str, Any]:
+        response = httpx.post(
+            f"{self.base_url}/admin/users",
+            headers=self._headers(),
+            json={
+                "username": username,
+                "password": password,
+                "role": role,
+                "attivo": attivo,
             },
             timeout=8.0,
         )

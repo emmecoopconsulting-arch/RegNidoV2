@@ -23,11 +23,13 @@ from app.models import (
     DeviceActivation,
     Dispositivo,
     PresenceEventType,
+    Role,
     Sede,
     UserRole,
     Utente,
 )
 from app.schemas import (
+    AuthMeOut,
     BambinoCreateIn,
     BambinoOut,
     DeviceClaimIn,
@@ -44,6 +46,8 @@ from app.schemas import (
     SedeOut,
     SyncIn,
     SyncOut,
+    UserCreateIn,
+    UserOut,
 )
 from app.security import create_access_token, hash_password, verify_password
 
@@ -102,6 +106,12 @@ def get_admin_user(user: Utente = Depends(get_current_user)) -> Utente:
     return user
 
 
+def user_groups(user: Utente) -> list[str]:
+    if user.ruolo and user.ruolo.code == UserRole.AMM_CENTRALE:
+        return ["admin"]
+    return ["educatore"]
+
+
 def generate_activation_code() -> str:
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     chunk_a = "".join(secrets.choice(alphabet) for _ in range(4))
@@ -122,7 +132,10 @@ def health() -> HealthOut:
 @app.post("/auth/login", response_model=LoginOut)
 def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)) -> LoginOut:
     user = authenticate_user(db, payload.username, payload.password)
-    token = create_access_token(subject=str(user.id))
+    token = create_access_token(
+        subject=str(user.id),
+        extra_claims={"role": user.ruolo.code.value, "groups": user_groups(user)},
+    )
     append_audit(
         db,
         azione="auth:login",
@@ -134,6 +147,16 @@ def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)) -> 
     )
     db.commit()
     return LoginOut(access_token=token)
+
+
+@app.get("/auth/me", response_model=AuthMeOut)
+def auth_me(user: Utente = Depends(get_current_user)) -> AuthMeOut:
+    return AuthMeOut(
+        id=user.id,
+        username=user.username,
+        role=user.ruolo.code,
+        groups=user_groups(user),
+    )
 
 
 @app.post("/admin/sedi", response_model=SedeOut)
@@ -165,6 +188,71 @@ def create_sede(payload: SedeCreateIn, user: Utente = Depends(get_admin_user), d
 def list_sedi(user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> list[SedeOut]:
     rows = db.scalars(select(Sede).order_by(Sede.nome.asc())).all()
     return [SedeOut(id=row.id, nome=row.nome, attiva=row.attiva) for row in rows]
+
+
+@app.get("/admin/users", response_model=list[UserOut])
+def list_users(user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> list[UserOut]:
+    rows = db.scalars(select(Utente).join(Role).order_by(Utente.username.asc())).all()
+    return [
+        UserOut(
+            id=row.id,
+            username=row.username,
+            role=row.ruolo.code,
+            groups=user_groups(row),
+            attivo=row.attivo,
+            sede_id=row.sede_id,
+        )
+        for row in rows
+    ]
+
+
+@app.post("/admin/users", response_model=UserOut)
+def create_user(payload: UserCreateIn, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> UserOut:
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username obbligatorio")
+
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password troppo corta (minimo 8 caratteri)")
+
+    existing = db.scalar(select(Utente).where(Utente.username == username))
+    if existing:
+        raise HTTPException(status_code=409, detail="Username gia esistente")
+
+    role = db.scalar(select(Role).where(Role.code == payload.role))
+    if not role:
+        raise HTTPException(status_code=400, detail="Ruolo non valido")
+
+    new_user = Utente(
+        username=username,
+        password_hash=hash_password(payload.password),
+        ruolo_id=role.id,
+        sede_id=payload.sede_id,
+        attivo=payload.attivo,
+    )
+    db.add(new_user)
+    db.flush()
+    db.refresh(new_user)
+
+    append_audit(
+        db,
+        azione="admin:create_user",
+        entita="utenti",
+        entita_id=str(new_user.id),
+        esito="OK",
+        utente_id=user.id,
+        dettagli={"role": payload.role.value, "attivo": payload.attivo},
+    )
+    db.commit()
+
+    return UserOut(
+        id=new_user.id,
+        username=new_user.username,
+        role=new_user.ruolo.code,
+        groups=user_groups(new_user),
+        attivo=new_user.attivo,
+        sede_id=new_user.sede_id,
+    )
 
 
 @app.post("/admin/bambini", response_model=BambinoOut)

@@ -78,8 +78,11 @@ curl http://localhost:8123/health
 
 - `GET /health`
 - `POST /auth/login`
+- `GET /auth/me`
 - `POST /admin/sedi`
 - `GET /admin/sedi`
+- `GET /admin/users`
+- `POST /admin/users`
 - `POST /admin/bambini`
 - `POST /admin/devices`
 - `POST /devices/claim`
