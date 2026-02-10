@@ -68,6 +68,16 @@ class BambinoOut(BaseModel):
     attivo: bool
 
 
+class BambinoPresenceStateOut(BaseModel):
+    id: uuid.UUID
+    nome: str
+    cognome: str
+    sede_id: uuid.UUID
+    attivo: bool
+    dentro: bool
+    entrata_aperta_da: datetime | None = None
+
+
 class SedeCreateIn(BaseModel):
     nome: str
 

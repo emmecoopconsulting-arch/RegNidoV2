@@ -1,4 +1,6 @@
-from PySide6.QtCore import Signal
+from datetime import datetime, timezone
+
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -10,13 +12,13 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
-
-from regnido_client.models import Bambino
 
 
 class DashboardView(QWidget):
@@ -35,7 +37,7 @@ class DashboardView(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self._bambini_by_id: dict[str, Bambino] = {}
+        self._presence_rows: dict[str, dict] = {}
         self._user_tab_index = -1
         self._iscritti_tab_index = -1
 
@@ -46,18 +48,20 @@ class DashboardView(QWidget):
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Cerca bambino...")
         self.search_input.textChanged.connect(lambda text: self.search_requested.emit(text.strip()))
+        self.search_input.textChanged.connect(self._filter_presence_rows)
 
-        self.list_widget = QListWidget()
+        self.presenze_table = QTableWidget()
+        self.presenze_table.setColumnCount(4)
+        self.presenze_table.setHorizontalHeaderLabels(["Bambino", "Timer frequenza", "Entra", "Esce"])
+        self.presenze_table.verticalHeader().setVisible(False)
+        self.presenze_table.setSelectionMode(QTableWidget.NoSelection)
+        self.presenze_table.setEditTriggers(QTableWidget.NoEditTriggers)
 
-        self.check_in_button = QPushButton("Check-in")
-        self.check_out_button = QPushButton("Check-out")
         self.sync_button = QPushButton("Sincronizza ora")
         self.settings_button = QPushButton("Impostazioni")
         self.refresh_device_button = QPushButton("Aggiorna dispositivo")
         self.logout_button = QPushButton("Logout")
 
-        self.check_in_button.clicked.connect(lambda: self._emit_presence(True))
-        self.check_out_button.clicked.connect(lambda: self._emit_presence(False))
         self.sync_button.clicked.connect(self.sync_requested)
         self.settings_button.clicked.connect(self.settings_requested)
         self.refresh_device_button.clicked.connect(self.refresh_device_requested)
@@ -70,8 +74,6 @@ class DashboardView(QWidget):
         top.addWidget(self.pending_label)
 
         actions = QVBoxLayout()
-        actions.addWidget(self.check_in_button)
-        actions.addWidget(self.check_out_button)
         actions.addWidget(self.sync_button)
         actions.addWidget(self.refresh_device_button)
         actions.addWidget(self.settings_button)
@@ -81,7 +83,7 @@ class DashboardView(QWidget):
         body = QHBoxLayout()
         left = QVBoxLayout()
         left.addWidget(self.search_input)
-        left.addWidget(self.list_widget)
+        left.addWidget(self.presenze_table)
         body.addLayout(left, 2)
         body.addLayout(actions, 1)
 
@@ -196,28 +198,81 @@ class DashboardView(QWidget):
         root.addWidget(self.tabs)
         self.setLayout(root)
 
-    def set_bambini(self, bambini: list[Bambino]) -> None:
-        self._bambini_by_id = {b.id: b for b in bambini}
-        self.list_widget.clear()
-        for bambino in bambini:
-            item = QListWidgetItem(bambino.display_name)
-            item.setData(1, bambino.id)
-            self.list_widget.addItem(item)
+        self._presence_timer = QTimer(self)
+        self._presence_timer.setInterval(1000)
+        self._presence_timer.timeout.connect(self._update_presence_timers)
+        self._presence_timer.start()
 
-    def selected_bambino_id(self) -> str:
-        item = self.list_widget.currentItem()
-        if not item:
-            return ""
-        return str(item.data(1))
+    def set_presence_rows(self, rows: list[dict]) -> None:
+        self._presence_rows = {}
+        self.presenze_table.setRowCount(len(rows))
+        for idx, row in enumerate(rows):
+            bambino_id = str(row.get("id", ""))
+            nome = str(row.get("nome", ""))
+            cognome = str(row.get("cognome", ""))
+            dentro = bool(row.get("dentro"))
+            start_raw = row.get("entrata_aperta_da")
+            start_dt = None
+            if isinstance(start_raw, str) and start_raw:
+                try:
+                    start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                except ValueError:
+                    start_dt = None
 
-    def _emit_presence(self, is_check_in: bool) -> None:
-        bambino_id = self.selected_bambino_id()
-        if not bambino_id:
-            return
-        if is_check_in:
-            self.check_in_requested.emit(bambino_id)
-            return
-        self.check_out_requested.emit(bambino_id)
+            display_name = f"{cognome} {nome}".strip()
+            self.presenze_table.setItem(idx, 0, QTableWidgetItem(display_name))
+
+            timer_label = QLabel("00:00:00")
+            self.presenze_table.setCellWidget(idx, 1, timer_label)
+
+            enter_button = QPushButton("Entra")
+            exit_button = QPushButton("Esce")
+            enter_button.clicked.connect(lambda _=False, b_id=bambino_id: self.check_in_requested.emit(b_id))
+            exit_button.clicked.connect(lambda _=False, b_id=bambino_id: self.check_out_requested.emit(b_id))
+            self.presenze_table.setCellWidget(idx, 2, enter_button)
+            self.presenze_table.setCellWidget(idx, 3, exit_button)
+
+            self._presence_rows[bambino_id] = {
+                "row": idx,
+                "display_name": display_name.lower(),
+                "dentro": dentro,
+                "start_dt": start_dt,
+                "timer_label": timer_label,
+                "enter_button": enter_button,
+                "exit_button": exit_button,
+            }
+
+        self._update_presence_timers()
+        self._filter_presence_rows(self.search_input.text().strip())
+
+    def _update_presence_timers(self) -> None:
+        now = datetime.now(timezone.utc)
+        for data in self._presence_rows.values():
+            dentro = bool(data["dentro"])
+            start_dt = data["start_dt"]
+            timer_label: QLabel = data["timer_label"]
+            enter_button: QPushButton = data["enter_button"]
+            exit_button: QPushButton = data["exit_button"]
+
+            if dentro and isinstance(start_dt, datetime):
+                elapsed = max(0, int((now - start_dt).total_seconds()))
+                h = elapsed // 3600
+                m = (elapsed % 3600) // 60
+                s = elapsed % 60
+                timer_label.setText(f"{h:02d}:{m:02d}:{s:02d}")
+            else:
+                timer_label.setText("00:00:00")
+
+            enter_button.setEnabled(not dentro)
+            exit_button.setEnabled(dentro)
+
+    def _filter_presence_rows(self, query: str) -> None:
+        query_norm = query.strip().lower()
+        for data in self._presence_rows.values():
+            row_idx = int(data["row"])
+            display_name = str(data["display_name"])
+            hidden = bool(query_norm) and query_norm not in display_name
+            self.presenze_table.setRowHidden(row_idx, hidden)
 
     def set_connection_status(self, message: str, ok: bool) -> None:
         color = "#1e6a2f" if ok else "#b00020"

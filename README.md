@@ -90,6 +90,7 @@ curl http://localhost:8123/health
 - `POST /devices/claim`
 - `GET /devices/{device_id}`
 - `GET /catalog/bambini?dispositivo_id=...`
+- `GET /catalog/presenze-stato?dispositivo_id=...`
 - `POST /presenze/check-in`
 - `POST /presenze/check-out`
 - `POST /sync`

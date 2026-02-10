@@ -23,6 +23,7 @@ from app.models import (
     DeviceActivation,
     Dispositivo,
     PresenceEventType,
+    Presenza,
     Role,
     Sede,
     UserRole,
@@ -31,6 +32,7 @@ from app.models import (
 from app.schemas import (
     AuthMeOut,
     BambinoCreateIn,
+    BambinoPresenceStateOut,
     BambinoOut,
     DeviceClaimIn,
     DeviceClaimOut,
@@ -560,6 +562,51 @@ def list_bambini(
         )
         for row in rows
     ]
+
+
+@app.get("/catalog/presenze-stato", response_model=list[BambinoPresenceStateOut])
+def list_bambini_presence_state(
+    dispositivo_id: uuid.UUID,
+    q: str | None = None,
+    limit: int = 200,
+    user: Utente = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[BambinoPresenceStateOut]:
+    limit = min(max(limit, 1), 500)
+    device = db.scalar(select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True)))
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo non trovato o disattivato")
+
+    stmt = select(Bambino).where(
+        Bambino.sede_id == device.sede_id,
+        Bambino.attivo.is_(True),
+    )
+    if q:
+        q_norm = f"%{q.strip()}%"
+        stmt = stmt.where((Bambino.nome.ilike(q_norm)) | (Bambino.cognome.ilike(q_norm)))
+
+    bambini = db.scalars(stmt.order_by(Bambino.cognome.asc(), Bambino.nome.asc()).limit(limit)).all()
+    result: list[BambinoPresenceStateOut] = []
+    for bambino in bambini:
+        latest = db.scalar(
+            select(Presenza)
+            .where(Presenza.bambino_id == bambino.id, Presenza.sede_id == device.sede_id)
+            .order_by(Presenza.timestamp_evento.desc())
+        )
+        dentro = bool(latest and latest.tipo_evento == PresenceEventType.ENTRATA)
+        entrata_aperta_da = latest.timestamp_evento if dentro else None
+        result.append(
+            BambinoPresenceStateOut(
+                id=bambino.id,
+                nome=bambino.nome,
+                cognome=bambino.cognome,
+                sede_id=bambino.sede_id,
+                attivo=bambino.attivo,
+                dentro=dentro,
+                entrata_aperta_da=entrata_aperta_da,
+            )
+        )
+    return result
 
 
 @app.get("/audit")

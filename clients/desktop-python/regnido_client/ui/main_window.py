@@ -442,16 +442,16 @@ class MainWindow(QMainWindow):
     def _on_search_requested(self, query: str) -> None:
         device_id = self.store.get_setting("device_id", "")
         if not device_id:
-            self.dashboard.set_bambini([])
+            self.dashboard.set_presence_rows([])
             return
 
         try:
-            bambini = self.api.list_bambini(dispositivo_id=device_id, q=query, limit=120)
-            self.dashboard.set_bambini(bambini)
+            rows = self.api.list_bambini_presence_state(dispositivo_id=device_id, q=query, limit=300)
+            self.dashboard.set_presence_rows(rows)
             self.dashboard.set_connection_status("online", ok=True)
         except httpx.HTTPError:
             self.dashboard.set_connection_status("offline/errore", ok=False)
-            self.dashboard.set_bambini([])
+            self.dashboard.set_presence_rows([])
 
     def _submit_presence_event(self, bambino_id: str, tipo_evento: str, endpoint: str) -> None:
         device_id = self.store.get_setting("device_id", "")
@@ -471,6 +471,7 @@ class MainWindow(QMainWindow):
             self.api.submit_presence_event(endpoint, payload)
             self.dashboard.set_connection_status("online", ok=True)
             self._show_info(f"{tipo_evento} registrata")
+            self._on_search_requested(self.dashboard.search_input.text().strip())
         except httpx.HTTPError as exc:
             self.store.enqueue_event(payload)
             self.store.mark_event_error(payload["client_event_id"], str(exc))
@@ -505,6 +506,7 @@ class MainWindow(QMainWindow):
             ids_to_remove = [row["client_event_id"] for row in pending][: accepted + skipped]
             self.store.remove_events(ids_to_remove)
             self.dashboard.set_connection_status("online", ok=True)
+            self._on_search_requested(self.dashboard.search_input.text().strip())
         except httpx.HTTPError as exc:
             for row in pending:
                 self.store.mark_event_error(row["client_event_id"], str(exc))

@@ -244,6 +244,16 @@ class ApiClient:
         response.raise_for_status()
         return [Bambino(id=row["id"], nome=row["nome"], cognome=row["cognome"]) for row in response.json()]
 
+    def list_bambini_presence_state(self, dispositivo_id: str, q: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        response = httpx.get(
+            f"{self.base_url}/catalog/presenze-stato",
+            params={"dispositivo_id": dispositivo_id, "q": q, "limit": limit},
+            headers=self._headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return list(response.json())
+
     def submit_presence_event(self, endpoint: str, payload: dict[str, str]) -> None:
         response = httpx.post(
             f"{self.base_url}{endpoint}",
