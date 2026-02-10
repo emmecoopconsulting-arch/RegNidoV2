@@ -35,7 +35,7 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       BOOTSTRAP_ADMIN_FULL_NAME: ${BOOTSTRAP_ADMIN_FULL_NAME:-}
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "${API_PORT:-8123}:8000"
     depends_on:
       db:
         condition: service_healthy

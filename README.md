@@ -47,7 +47,7 @@ Copia `.env.example` in `.env` per uso locale. In Portainer inserisci le stesse 
 |---|---|---|---|
 | `PROJECT_NAME` | Sì | `regnido` | Prefisso nomi container |
 | `TZ` | Sì | `Europe/Rome` | Timezone container |
-| `API_PORT` | Sì | `8000` | Porta esposta API |
+| `API_PORT` | Sì | `8123` | Porta esposta API |
 | `APP_ENV` | Sì | `development` | Ambiente (`development`/`production`) |
 | `SECRET_KEY` | Sì | `change-me-in-production` | Chiave firma JWT (metti valore robusto) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Sì | `60` | Durata token accesso |
@@ -66,7 +66,7 @@ Copia `.env.example` in `.env` per uso locale. In Portainer inserisci le stesse 
 ```bash
 cp .env.example .env
 docker compose up -d --build
-curl http://localhost:8000/health
+curl http://localhost:8123/health
 ```
 
 ## Endpoint disponibili (MVP skeleton)
