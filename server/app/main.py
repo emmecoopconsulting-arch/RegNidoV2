@@ -15,8 +15,18 @@ from app.crud import (
     seed_roles_permissions,
 )
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import AuditLog, PresenceEventType, Utente
-from app.schemas import HealthOut, LoginIn, LoginOut, PresenceEventIn, PresenceEventOut, SyncIn, SyncOut
+from app.models import AuditLog, Bambino, Dispositivo, PresenceEventType, Sede, Utente
+from app.schemas import (
+    BambinoOut,
+    DeviceProfileOut,
+    HealthOut,
+    LoginIn,
+    LoginOut,
+    PresenceEventIn,
+    PresenceEventOut,
+    SyncIn,
+    SyncOut,
+)
 from app.security import create_access_token
 
 
@@ -138,6 +148,65 @@ def sync(payload: SyncIn, user: Utente = Depends(get_current_user), db: Session 
 
     db.commit()
     return SyncOut(accepted=accepted, skipped=skipped)
+
+
+@app.get("/devices/{device_id}", response_model=DeviceProfileOut)
+def get_device_profile(device_id: uuid.UUID, user: Utente = Depends(get_current_user), db: Session = Depends(get_db)) -> DeviceProfileOut:
+    row = db.execute(
+        select(
+            Dispositivo.id,
+            Dispositivo.nome,
+            Dispositivo.sede_id,
+            Dispositivo.attivo,
+            Sede.nome.label("sede_nome"),
+        ).join(Sede, Sede.id == Dispositivo.sede_id)
+        .where(Dispositivo.id == device_id)
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Dispositivo non trovato")
+    return DeviceProfileOut(
+        id=row.id,
+        nome=row.nome,
+        sede_id=row.sede_id,
+        sede_nome=row.sede_nome,
+        attivo=row.attivo,
+    )
+
+
+@app.get("/catalog/bambini", response_model=list[BambinoOut])
+def list_bambini(
+    dispositivo_id: uuid.UUID,
+    q: str | None = None,
+    limit: int = 100,
+    user: Utente = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[BambinoOut]:
+    limit = min(max(limit, 1), 500)
+    device = db.scalar(
+        select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True))
+    )
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo non trovato o disattivato")
+
+    stmt = select(Bambino).where(
+        Bambino.sede_id == device.sede_id,
+        Bambino.attivo.is_(True),
+    )
+    if q:
+        q_norm = f"%{q.strip()}%"
+        stmt = stmt.where((Bambino.nome.ilike(q_norm)) | (Bambino.cognome.ilike(q_norm)))
+
+    rows = db.scalars(stmt.order_by(Bambino.cognome.asc(), Bambino.nome.asc()).limit(limit)).all()
+    return [
+        BambinoOut(
+            id=row.id,
+            nome=row.nome,
+            cognome=row.cognome,
+            sede_id=row.sede_id,
+            attivo=row.attivo,
+        )
+        for row in rows
+    ]
 
 
 @app.get("/audit")

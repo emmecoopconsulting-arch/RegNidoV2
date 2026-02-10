@@ -12,6 +12,10 @@ Skeleton iniziale per sistema presenze asili con:
 .
 ├── client/
 │   └── README.md
+├── clients/
+│   └── desktop-python/
+│       ├── README.md
+│       └── ...
 ├── server/
 │   ├── app/
 │   │   ├── config.py
@@ -73,6 +77,8 @@ curl http://localhost:8123/health
 
 - `GET /health`
 - `POST /auth/login`
+- `GET /devices/{device_id}`
+- `GET /catalog/bambini?dispositivo_id=...`
 - `POST /presenze/check-in`
 - `POST /presenze/check-out`
 - `POST /sync`

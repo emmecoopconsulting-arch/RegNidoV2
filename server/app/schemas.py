@@ -41,3 +41,19 @@ class SyncIn(BaseModel):
 class SyncOut(BaseModel):
     accepted: int
     skipped: int
+
+
+class DeviceProfileOut(BaseModel):
+    id: uuid.UUID
+    nome: str
+    sede_id: uuid.UUID
+    sede_nome: str
+    attivo: bool
+
+
+class BambinoOut(BaseModel):
+    id: uuid.UUID
+    nome: str
+    cognome: str
+    sede_id: uuid.UUID
+    attivo: bool
