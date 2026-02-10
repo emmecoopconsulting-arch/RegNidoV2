@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+import json
 
 import httpx
 from PySide6.QtCore import QTimer
@@ -22,6 +23,7 @@ class MainWindow(QMainWindow):
 
         self.store = LocalStore(DB_PATH)
         self.api = ApiClient(self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL))
+        self.admin_token = ""
 
         self.setup_view = SetupView()
         self.login_view = LoginView()
@@ -35,6 +37,10 @@ class MainWindow(QMainWindow):
 
         self.setup_view.save_requested.connect(self._on_setup_save_requested)
         self.setup_view.test_requested.connect(self._on_setup_test_requested)
+        self.setup_view.admin_login_requested.connect(self._on_admin_login_requested)
+        self.setup_view.admin_create_sede_requested.connect(self._on_admin_create_sede_requested)
+        self.setup_view.admin_create_bambino_requested.connect(self._on_admin_create_bambino_requested)
+        self.setup_view.admin_create_device_requested.connect(self._on_admin_create_device_requested)
         self.login_view.login_requested.connect(self._on_login_requested)
         self.login_view.setup_requested.connect(self._show_setup)
         self.dashboard.search_requested.connect(self._on_search_requested)
@@ -56,22 +62,38 @@ class MainWindow(QMainWindow):
         saved_token = self.store.get_setting("access_token", "")
         if not device_id:
             self.stack.setCurrentWidget(self.setup_view)
-            self.setup_view.set_status("Inserisci URL backend e Device ID per iniziare")
+            self.setup_view.set_status("Inserisci URL backend e activation code per iniziare")
         elif saved_token:
             self.api.set_token(saved_token)
-            self.stack.setCurrentWidget(self.dashboard)
-            self.sync_timer.start()
-            self._post_login_refresh()
+            if not self.api.token_still_valid():
+                self.store.set_setting("access_token", "")
+                self.api.set_token("")
+                self.stack.setCurrentWidget(self.login_view)
+                self.login_view.set_status("Sessione scaduta. Esegui di nuovo il login.", is_error=True)
+                self._update_login_health()
+            else:
+                self.stack.setCurrentWidget(self.dashboard)
+                self.sync_timer.start()
+                self._post_login_refresh()
         else:
             self.stack.setCurrentWidget(self.login_view)
             self._update_login_health()
 
     def _update_login_health(self) -> None:
-        ok = self.api.health()
-        if ok:
-            self.login_view.set_status("Backend raggiungibile")
+        try:
+            details = self.api.health_details()
+        except httpx.HTTPError:
+            self.login_view.set_status("Backend non raggiungibile", is_error=True)
             return
-        self.login_view.set_status("Backend non raggiungibile", is_error=True)
+
+        skew = abs(int(details.get("clock_skew_seconds", 0)))
+        if skew > 300:
+            self.login_view.set_status(
+                f"Backend raggiungibile ma orologio locale fuori sync di ~{skew}s",
+                is_error=True,
+            )
+            return
+        self.login_view.set_status("Backend raggiungibile")
 
     def _on_login_requested(self, username: str, password: str) -> None:
         if not username or not password:
@@ -107,12 +129,108 @@ class MainWindow(QMainWindow):
             return
         old_url = self.api.base_url
         self.api.set_base_url(api_base_url)
-        ok = self.api.health()
+        details: dict = {}
+        ok = False
+        skew = 0
+        try:
+            details = self.api.health_details()
+            ok = details.get("status") == "ok"
+            skew = abs(int(details.get("clock_skew_seconds", 0)))
+        except httpx.HTTPError:
+            ok = False
         self.api.set_base_url(old_url)
         if ok:
+            if skew > 300:
+                self.setup_view.set_status(f"Backend OK ma clock locale fuori sync di ~{skew}s", is_error=True)
+                return
             self.setup_view.set_status("Backend raggiungibile")
             return
         self.setup_view.set_status("Backend non raggiungibile", is_error=True)
+
+    def _on_admin_login_requested(self, api_base_url: str, username: str, password: str) -> None:
+        if not api_base_url or not username or not password:
+            self.setup_view.set_admin_status("Inserisci URL, username e password", is_error=True)
+            return
+        if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
+            self.setup_view.set_admin_status("API Base URL non valido", is_error=True)
+            return
+
+        self.store.set_setting("api_base_url", api_base_url)
+        self.api.set_base_url(api_base_url)
+        try:
+            self.admin_token = self.api.login_no_store(username, password)
+            self.setup_view.set_admin_enabled(True)
+            self.setup_view.set_admin_status(f"Admin autenticato: {username}")
+            self.setup_view.append_admin_output("Login admin OK")
+        except httpx.HTTPStatusError as exc:
+            self.setup_view.set_admin_enabled(False)
+            self.setup_view.set_admin_status("Login admin fallito", is_error=True)
+            self.setup_view.append_admin_output(f"Errore login admin: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.setup_view.set_admin_enabled(False)
+            self.setup_view.set_admin_status("Errore rete admin", is_error=True)
+            self.setup_view.append_admin_output(f"Errore rete: {exc}")
+
+    def _on_admin_create_sede_requested(self, nome: str) -> None:
+        if not self.admin_token:
+            self.setup_view.set_admin_status("Esegui login admin prima", is_error=True)
+            return
+        if not nome:
+            self.setup_view.set_admin_status("Nome sede obbligatorio", is_error=True)
+            return
+        try:
+            data = self.api.create_sede(nome=nome, admin_token=self.admin_token)
+            sede_id = data["id"]
+            self.setup_view.last_sede_id_label.setText(sede_id)
+            self.setup_view.bambino_sede_id_input.setText(sede_id)
+            self.setup_view.device_sede_id_input.setText(sede_id)
+            self.setup_view.append_admin_output(json.dumps(data, indent=2, ensure_ascii=False))
+        except httpx.HTTPStatusError as exc:
+            self.setup_view.append_admin_output(f"Errore crea sede: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.setup_view.append_admin_output(f"Errore rete: {exc}")
+
+    def _on_admin_create_bambino_requested(self, sede_id: str, nome: str, cognome: str, attivo: bool) -> None:
+        if not self.admin_token:
+            self.setup_view.set_admin_status("Esegui login admin prima", is_error=True)
+            return
+        if not sede_id or not nome or not cognome:
+            self.setup_view.set_admin_status("Sede ID, nome e cognome obbligatori", is_error=True)
+            return
+        try:
+            data = self.api.create_bambino(
+                sede_id=sede_id,
+                nome=nome,
+                cognome=cognome,
+                attivo=attivo,
+                admin_token=self.admin_token,
+            )
+            self.setup_view.append_admin_output(json.dumps(data, indent=2, ensure_ascii=False))
+        except httpx.HTTPStatusError as exc:
+            self.setup_view.append_admin_output(f"Errore crea bambino: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.setup_view.append_admin_output(f"Errore rete: {exc}")
+
+    def _on_admin_create_device_requested(self, sede_id: str, nome: str, expiry: int) -> None:
+        if not self.admin_token:
+            self.setup_view.set_admin_status("Esegui login admin prima", is_error=True)
+            return
+        if not sede_id or not nome:
+            self.setup_view.set_admin_status("Sede ID e nome dispositivo obbligatori", is_error=True)
+            return
+        try:
+            data = self.api.create_device(
+                sede_id=sede_id,
+                nome=nome,
+                activation_expires_minutes=expiry,
+                admin_token=self.admin_token,
+            )
+            self.setup_view.set_generated_activation_code(data["activation_code"])
+            self.setup_view.append_admin_output(json.dumps(data, indent=2, ensure_ascii=False))
+        except httpx.HTTPStatusError as exc:
+            self.setup_view.append_admin_output(f"Errore crea dispositivo: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.setup_view.append_admin_output(f"Errore rete: {exc}")
 
     def _on_setup_save_requested(self, api_base_url: str, activation_code: str) -> None:
         if not api_base_url:

@@ -32,6 +32,8 @@ class PresenceEventOut(BaseModel):
 
 class HealthOut(BaseModel):
     status: str
+    server_time_utc: datetime
+    server_tz: str = "UTC"
 
 
 class SyncIn(BaseModel):

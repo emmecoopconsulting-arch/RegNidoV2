@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://regnido_user:change-me-db-password@db:5432/regnido"
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 60
+    jwt_leeway_seconds: int = 300
     cors_origins: str = "*"
 
     bootstrap_admin_username: str = ""

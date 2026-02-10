@@ -1,5 +1,4 @@
 import secrets
-import string
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -80,7 +79,12 @@ def get_current_user(authorization: str = Header(default=""), db: Session = Depe
 
     token = authorization.replace("Bearer ", "", 1)
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=["HS256"],
+            options={"leeway": settings.jwt_leeway_seconds},
+        )
         user_id = payload.get("sub")
         user_uuid = uuid.UUID(user_id)
     except (JWTError, ValueError):
@@ -111,7 +115,7 @@ def normalize_activation_code(code: str) -> str:
 
 @app.get("/health", response_model=HealthOut)
 def health() -> HealthOut:
-    return HealthOut(status="ok")
+    return HealthOut(status="ok", server_time_utc=datetime.now(timezone.utc), server_tz="UTC")
 
 
 @app.post("/auth/login", response_model=LoginOut)

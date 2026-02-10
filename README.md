@@ -16,9 +16,6 @@ Skeleton iniziale per sistema presenze asili con:
 │   └── desktop-python/
 │       ├── README.md
 │       └── ...
-│   └── admin-python/
-│       ├── README.md
-│       └── ...
 ├── server/
 │   ├── app/
 │   │   ├── config.py
@@ -58,6 +55,7 @@ Copia `.env.example` in `.env` per uso locale. In Portainer inserisci le stesse 
 | `APP_ENV` | Sì | `development` | Ambiente (`development`/`production`) |
 | `SECRET_KEY` | Sì | `change-me-in-production` | Chiave firma JWT (metti valore robusto) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Sì | `60` | Durata token accesso |
+| `JWT_LEEWAY_SECONDS` | Sì | `300` | Tolleranza clock skew token JWT |
 | `CORS_ORIGINS` | Sì | `*` | Origini CORS (in produzione restringi) |
 | `POSTGRES_DB` | Sì | `regnido` | Nome database |
 | `POSTGRES_USER` | Sì | `regnido_user` | Utente DB |
@@ -92,8 +90,7 @@ curl http://localhost:8123/health
 - `GET /audit`
 
 ## App desktop
-- Operatore: `/Users/matteocopelli/MEGA/PROGETTI/REGISTRO-ELETTRONICO/RegNidoV2/clients/desktop-python` (`python3 run.py`)
-- Admin: `/Users/matteocopelli/MEGA/PROGETTI/REGISTRO-ELETTRONICO/RegNidoV2/clients/admin-python` (`python3 run.py`)
+- Unica app desktop (operatore + pannello admin): `/Users/matteocopelli/MEGA/PROGETTI/REGISTRO-ELETTRONICO/RegNidoV2/clients/desktop-python` (`python3 run.py`)
 
 ## Note implementative attuali
 

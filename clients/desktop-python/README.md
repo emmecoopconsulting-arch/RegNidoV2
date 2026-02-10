@@ -5,6 +5,7 @@ Client desktop MVP per RegNido con:
 - dashboard presenze con ricerca bambini
 - check-in/check-out
 - modalita offline-first con coda SQLite locale e sync periodico (`/sync`)
+- pannello admin integrato nella schermata iniziale (sedi, bambini, dispositivi)
 
 ## Struttura
 - `main.py`: entrypoint GUI
@@ -44,15 +45,18 @@ python main.py
 
 ## Prima configurazione app
 1. Al primo avvio compare la schermata `Configurazione iniziale backend`
-2. Inserisci `API Base URL` (es: `http://localhost:8123`)
-3. Inserisci `Activation Code` generato da admin
-4. Clicca `Salva e continua`, poi esegui login
+2. Nel pannello `Admin` puoi (opzionale) fare provisioning:
+   - login admin
+   - crea sede
+   - crea bambini
+   - crea dispositivo e ottieni `Activation Code`
+3. Inserisci `API Base URL` (es: `http://localhost:8123`)
+4. Inserisci `Activation Code`
+5. Clicca `Salva e continua`, poi esegui login
 
-## Provisioning dispositivo (admin)
-1. Login admin via API
-2. Crea sede: `POST /admin/sedi`
-3. Crea dispositivo: `POST /admin/devices`
-4. Copia `activation_code` restituito e inseriscilo nel client
+Nota clock/fuso:
+- Se l'orologio locale e quello server differiscono di oltre 5 minuti, l'app mostra warning.
+- In quel caso sincronizza data/ora della macchina (NTP) per evitare errori token.
 
 ## Endpoint server usati dal client
 - `GET /health`
