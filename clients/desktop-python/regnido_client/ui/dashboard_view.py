@@ -26,13 +26,18 @@ class DashboardView(QWidget):
     sync_requested = Signal()
     settings_requested = Signal()
     refresh_device_requested = Signal()
+    logout_requested = Signal()
     refresh_users_requested = Signal()
     create_user_requested = Signal(str, str, str, bool)
+    refresh_iscritti_requested = Signal(str, bool)
+    create_iscritto_requested = Signal(str, str, str, bool)
+    delete_iscritto_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
         self._bambini_by_id: dict[str, Bambino] = {}
         self._user_tab_index = -1
+        self._iscritti_tab_index = -1
 
         self.connection_label = QLabel("Stato rete: -")
         self.device_label = QLabel("Dispositivo: -")
@@ -49,12 +54,14 @@ class DashboardView(QWidget):
         self.sync_button = QPushButton("Sincronizza ora")
         self.settings_button = QPushButton("Impostazioni")
         self.refresh_device_button = QPushButton("Aggiorna dispositivo")
+        self.logout_button = QPushButton("Logout")
 
         self.check_in_button.clicked.connect(lambda: self._emit_presence(True))
         self.check_out_button.clicked.connect(lambda: self._emit_presence(False))
         self.sync_button.clicked.connect(self.sync_requested)
         self.settings_button.clicked.connect(self.settings_requested)
         self.refresh_device_button.clicked.connect(self.refresh_device_requested)
+        self.logout_button.clicked.connect(self.logout_requested)
 
         top = QHBoxLayout()
         top.addWidget(self.connection_label)
@@ -68,6 +75,7 @@ class DashboardView(QWidget):
         actions.addWidget(self.sync_button)
         actions.addWidget(self.refresh_device_button)
         actions.addWidget(self.settings_button)
+        actions.addWidget(self.logout_button)
         actions.addStretch(1)
 
         body = QHBoxLayout()
@@ -126,10 +134,63 @@ class DashboardView(QWidget):
         users_tab = QWidget()
         users_tab.setLayout(users_root)
 
+        self.iscritti_list_widget = QListWidget()
+        self.iscritti_sede_filter_combo = QComboBox()
+        self.iscritti_include_inactive_checkbox = QCheckBox("Mostra disattivi")
+        self.refresh_iscritti_button = QPushButton("Aggiorna iscritti")
+        self.iscritto_sede_combo = QComboBox()
+        self.iscritto_nome_input = QLineEdit()
+        self.iscritto_cognome_input = QLineEdit()
+        self.iscritto_attivo_checkbox = QCheckBox("Attivo")
+        self.iscritto_attivo_checkbox.setChecked(True)
+        self.create_iscritto_button = QPushButton("Aggiungi iscritto")
+        self.delete_iscritto_button = QPushButton("Elimina selezionato")
+        self.iscritti_status = QTextEdit()
+        self.iscritti_status.setReadOnly(True)
+        self.iscritti_status.setMaximumHeight(160)
+
+        self.refresh_iscritti_button.clicked.connect(self._emit_refresh_iscritti)
+        self.create_iscritto_button.clicked.connect(self._emit_create_iscritto)
+        self.delete_iscritto_button.clicked.connect(self._emit_delete_iscritto)
+
+        iscritti_filter_row = QHBoxLayout()
+        iscritti_filter_row.addWidget(QLabel("Sede"))
+        iscritti_filter_row.addWidget(self.iscritti_sede_filter_combo)
+        iscritti_filter_row.addWidget(self.iscritti_include_inactive_checkbox)
+        iscritti_filter_row.addStretch(1)
+        iscritti_filter_row.addWidget(self.refresh_iscritti_button)
+
+        iscritto_form = QFormLayout()
+        iscritto_form.addRow("Sede", self.iscritto_sede_combo)
+        iscritto_form.addRow("Nome", self.iscritto_nome_input)
+        iscritto_form.addRow("Cognome", self.iscritto_cognome_input)
+        iscritto_form.addRow("Stato", self.iscritto_attivo_checkbox)
+
+        iscritti_actions = QHBoxLayout()
+        iscritti_actions.addWidget(self.create_iscritto_button)
+        iscritti_actions.addWidget(self.delete_iscritto_button)
+        iscritti_actions.addStretch(1)
+
+        iscritti_form_group = QGroupBox("Nuovo iscritto")
+        iscritti_form_group_layout = QVBoxLayout()
+        iscritti_form_group_layout.addLayout(iscritto_form)
+        iscritti_form_group_layout.addLayout(iscritti_actions)
+        iscritti_form_group.setLayout(iscritti_form_group_layout)
+
+        iscritti_root = QVBoxLayout()
+        iscritti_root.addLayout(iscritti_filter_row)
+        iscritti_root.addWidget(self.iscritti_list_widget)
+        iscritti_root.addWidget(iscritti_form_group)
+        iscritti_root.addWidget(self.iscritti_status)
+        iscritti_tab = QWidget()
+        iscritti_tab.setLayout(iscritti_root)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(presenze_tab, "Presenze")
         self._user_tab_index = self.tabs.addTab(users_tab, "Gestione utenti")
+        self._iscritti_tab_index = self.tabs.addTab(iscritti_tab, "Iscritti")
         self.tabs.setTabVisible(self._user_tab_index, False)
+        self.tabs.setTabVisible(self._iscritti_tab_index, False)
 
         root = QVBoxLayout()
         root.addWidget(self.tabs)
@@ -169,11 +230,15 @@ class DashboardView(QWidget):
     def set_pending_count(self, count: int) -> None:
         self.pending_label.setText(f"Pending sync: {count}")
 
-    def set_user_tab_visible(self, visible: bool) -> None:
+    def set_admin_tabs_visible(self, visible: bool) -> None:
         if self._user_tab_index < 0:
             return
         self.tabs.setTabVisible(self._user_tab_index, visible)
+        if self._iscritti_tab_index >= 0:
+            self.tabs.setTabVisible(self._iscritti_tab_index, visible)
         if not visible and self.tabs.currentIndex() == self._user_tab_index:
+            self.tabs.setCurrentIndex(0)
+        if not visible and self.tabs.currentIndex() == self._iscritti_tab_index:
             self.tabs.setCurrentIndex(0)
 
     def set_users(self, users: list[dict[str, str]]) -> None:
@@ -203,3 +268,51 @@ class DashboardView(QWidget):
             str(self.user_role_combo.currentData()),
             self.user_active_checkbox.isChecked(),
         )
+
+    def set_sedi_for_iscritti(self, sedi: list[tuple[str, str]]) -> None:
+        self.iscritti_sede_filter_combo.clear()
+        self.iscritti_sede_filter_combo.addItem("Tutte le sedi", "")
+        self.iscritto_sede_combo.clear()
+        for sede_id, sede_nome in sedi:
+            label = f"{sede_nome} ({sede_id[:8]})"
+            self.iscritti_sede_filter_combo.addItem(label, sede_id)
+            self.iscritto_sede_combo.addItem(label, sede_id)
+
+    def set_iscritti(self, iscritti: list[dict[str, str]], sedi_map: dict[str, str]) -> None:
+        self.iscritti_list_widget.clear()
+        for iscritto in iscritti:
+            sede_id = str(iscritto.get("sede_id", ""))
+            sede_nome = sedi_map.get(sede_id, sede_id[:8])
+            stato = "attivo" if iscritto.get("attivo") else "disattivo"
+            label = f"{iscritto.get('cognome', '-')} {iscritto.get('nome', '-')} | {sede_nome} | {stato}"
+            item = QListWidgetItem(label)
+            item.setData(1, iscritto.get("id", ""))
+            self.iscritti_list_widget.addItem(item)
+
+    def append_iscritti_status(self, message: str) -> None:
+        self.iscritti_status.append(message)
+
+    def clear_iscritto_form(self) -> None:
+        self.iscritto_nome_input.clear()
+        self.iscritto_cognome_input.clear()
+        self.iscritto_attivo_checkbox.setChecked(True)
+
+    def _emit_refresh_iscritti(self) -> None:
+        sede_id = str(self.iscritti_sede_filter_combo.currentData() or "")
+        self.refresh_iscritti_requested.emit(sede_id, self.iscritti_include_inactive_checkbox.isChecked())
+
+    def _emit_create_iscritto(self) -> None:
+        sede_id = str(self.iscritto_sede_combo.currentData() or "")
+        self.create_iscritto_requested.emit(
+            sede_id,
+            self.iscritto_nome_input.text().strip(),
+            self.iscritto_cognome_input.text().strip(),
+            self.iscritto_attivo_checkbox.isChecked(),
+        )
+
+    def _emit_delete_iscritto(self) -> None:
+        item = self.iscritti_list_widget.currentItem()
+        if not item:
+            self.delete_iscritto_requested.emit("")
+            return
+        self.delete_iscritto_requested.emit(str(item.data(1)))

@@ -84,6 +84,8 @@ curl http://localhost:8123/health
 - `GET /admin/users`
 - `POST /admin/users`
 - `POST /admin/bambini`
+- `GET /admin/bambini`
+- `DELETE /admin/bambini/{bambino_id}`
 - `POST /admin/devices`
 - `POST /devices/claim`
 - `GET /devices/{device_id}`
@@ -103,6 +105,8 @@ curl http://localhost:8123/health
 - Admin bootstrap viene creato solo se non esistono utenti.
 - `Presenza.client_event_id` è univoco per idempotenza sync.
 - `Dispositivo` è previsto per vincolo `device -> sede`.
+- `Bambino` richiede sempre `sede_id`; il check-in/out valida che bambino e dispositivo appartengano alla stessa sede.
+- L'eliminazione iscritto da admin è logica (`attivo=false`) per preservare lo storico.
 - Audit log append-only a livello applicativo.
 
 ## Sicurezza (da fare subito prima di produzione)

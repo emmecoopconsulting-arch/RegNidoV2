@@ -113,6 +113,15 @@ class ApiClient:
         response.raise_for_status()
         return list(response.json())
 
+    def list_sedi_auth(self) -> list[dict[str, Any]]:
+        response = httpx.get(
+            f"{self.base_url}/admin/sedi",
+            headers=self._headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return list(response.json())
+
     def create_bambino(self, sede_id: str, nome: str, cognome: str, admin_token: str, attivo: bool = True) -> dict[str, Any]:
         response = httpx.post(
             f"{self.base_url}/admin/bambini",
@@ -123,6 +132,43 @@ class ApiClient:
                 "cognome": cognome,
                 "attivo": attivo,
             },
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def list_bambini_admin(self, sede_id: str | None = None, include_inactive: bool = False) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"include_inactive": include_inactive}
+        if sede_id:
+            params["sede_id"] = sede_id
+        response = httpx.get(
+            f"{self.base_url}/admin/bambini",
+            headers=self._headers(),
+            params=params,
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return list(response.json())
+
+    def create_bambino_admin(self, sede_id: str, nome: str, cognome: str, attivo: bool = True) -> dict[str, Any]:
+        response = httpx.post(
+            f"{self.base_url}/admin/bambini",
+            headers=self._headers(),
+            json={
+                "sede_id": sede_id,
+                "nome": nome,
+                "cognome": cognome,
+                "attivo": attivo,
+            },
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def delete_bambino_admin(self, bambino_id: str) -> dict[str, Any]:
+        response = httpx.delete(
+            f"{self.base_url}/admin/bambini/{bambino_id}",
+            headers=self._headers(),
             timeout=8.0,
         )
         response.raise_for_status()

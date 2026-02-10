@@ -293,6 +293,63 @@ def create_bambino(payload: BambinoCreateIn, user: Utente = Depends(get_admin_us
     )
 
 
+@app.get("/admin/bambini", response_model=list[BambinoOut])
+def list_admin_bambini(
+    user: Utente = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+    sede_id: uuid.UUID | None = None,
+    include_inactive: bool = False,
+) -> list[BambinoOut]:
+    stmt = select(Bambino)
+    if sede_id:
+        stmt = stmt.where(Bambino.sede_id == sede_id)
+    if not include_inactive:
+        stmt = stmt.where(Bambino.attivo.is_(True))
+
+    rows = db.scalars(stmt.order_by(Bambino.cognome.asc(), Bambino.nome.asc())).all()
+    return [
+        BambinoOut(
+            id=row.id,
+            nome=row.nome,
+            cognome=row.cognome,
+            sede_id=row.sede_id,
+            attivo=row.attivo,
+        )
+        for row in rows
+    ]
+
+
+@app.delete("/admin/bambini/{bambino_id}", response_model=BambinoOut)
+def delete_bambino(
+    bambino_id: uuid.UUID,
+    user: Utente = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+) -> BambinoOut:
+    bambino = db.scalar(select(Bambino).where(Bambino.id == bambino_id))
+    if not bambino:
+        raise HTTPException(status_code=404, detail="Bambino non trovato")
+
+    bambino.attivo = False
+    append_audit(
+        db,
+        azione="admin:delete_bambino",
+        entita="bambini",
+        entita_id=str(bambino.id),
+        esito="OK",
+        utente_id=user.id,
+        dettagli={"sede_id": str(bambino.sede_id)},
+    )
+    db.commit()
+
+    return BambinoOut(
+        id=bambino.id,
+        nome=bambino.nome,
+        cognome=bambino.cognome,
+        sede_id=bambino.sede_id,
+        attivo=bambino.attivo,
+    )
+
+
 @app.post("/admin/devices", response_model=DeviceProvisionOut)
 def create_device(payload: DeviceCreateIn, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> DeviceProvisionOut:
     sede = db.scalar(select(Sede).where(Sede.id == payload.sede_id, Sede.attiva.is_(True)))

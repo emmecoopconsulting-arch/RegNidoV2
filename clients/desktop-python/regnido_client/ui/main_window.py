@@ -50,8 +50,12 @@ class MainWindow(QMainWindow):
         self.dashboard.sync_requested.connect(self._sync_pending)
         self.dashboard.settings_requested.connect(self._open_settings)
         self.dashboard.refresh_device_requested.connect(self._refresh_device)
+        self.dashboard.logout_requested.connect(self._on_logout_requested)
         self.dashboard.refresh_users_requested.connect(self._on_refresh_users_requested)
         self.dashboard.create_user_requested.connect(self._on_create_user_requested)
+        self.dashboard.refresh_iscritti_requested.connect(self._on_refresh_iscritti_requested)
+        self.dashboard.create_iscritto_requested.connect(self._on_create_iscritto_requested)
+        self.dashboard.delete_iscritto_requested.connect(self._on_delete_iscritto_requested)
 
         self.sync_timer = QTimer(self)
         self.sync_timer.setInterval(30000)
@@ -292,18 +296,29 @@ class MainWindow(QMainWindow):
         self._on_search_requested("")
         self._sync_pending()
 
+    def _on_logout_requested(self) -> None:
+        self.sync_timer.stop()
+        self.store.set_setting("access_token", "")
+        self.api.set_token("")
+        self.dashboard.set_admin_tabs_visible(False)
+        self.stack.setCurrentWidget(self.login_view)
+        self.login_view.set_status("Logout eseguito")
+        self._update_login_health()
+
     def _refresh_user_capabilities(self) -> None:
         try:
             profile = self.api.auth_me()
         except httpx.HTTPError:
-            self.dashboard.set_user_tab_visible(False)
+            self.dashboard.set_admin_tabs_visible(False)
             return
 
         groups = {str(group).lower() for group in profile.get("groups", [])}
         is_admin = "admin" in groups
-        self.dashboard.set_user_tab_visible(is_admin)
+        self.dashboard.set_admin_tabs_visible(is_admin)
         if is_admin:
             self._on_refresh_users_requested()
+            self._load_sedi_for_iscritti()
+            self._on_refresh_iscritti_requested("", False)
 
     def _on_refresh_users_requested(self) -> None:
         try:
@@ -331,6 +346,63 @@ class MainWindow(QMainWindow):
             self.dashboard.append_users_status(f"Errore creazione utente: {exc.response.text}")
         except httpx.HTTPError as exc:
             self.dashboard.append_users_status(f"Errore rete creazione utente: {exc}")
+
+    def _load_sedi_for_iscritti(self) -> None:
+        try:
+            rows = self.api.list_sedi_auth()
+            sedi = [(row["id"], row["nome"]) for row in rows]
+            self.dashboard.set_sedi_for_iscritti(sedi)
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_iscritti_status(f"Errore sedi iscritti: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_iscritti_status(f"Errore rete sedi iscritti: {exc}")
+
+    def _on_refresh_iscritti_requested(self, sede_id: str, include_inactive: bool) -> None:
+        try:
+            rows = self.api.list_bambini_admin(sede_id=sede_id or None, include_inactive=include_inactive)
+            sedi_rows = self.api.list_sedi_auth()
+            sedi_map = {str(row["id"]): str(row["nome"]) for row in sedi_rows}
+            self.dashboard.set_iscritti(rows, sedi_map)
+            self.dashboard.append_iscritti_status(f"Iscritti caricati: {len(rows)}")
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_iscritti_status(f"Errore elenco iscritti: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_iscritti_status(f"Errore rete elenco iscritti: {exc}")
+
+    def _on_create_iscritto_requested(self, sede_id: str, nome: str, cognome: str, attivo: bool) -> None:
+        if not sede_id:
+            self.dashboard.append_iscritti_status("Sede obbligatoria per creare un iscritto")
+            return
+        if not nome or not cognome:
+            self.dashboard.append_iscritti_status("Nome e cognome obbligatori")
+            return
+
+        try:
+            created = self.api.create_bambino_admin(sede_id=sede_id, nome=nome, cognome=cognome, attivo=attivo)
+            self.dashboard.append_iscritti_status(
+                f"Iscritto creato: {created.get('cognome')} {created.get('nome')}"
+            )
+            self.dashboard.clear_iscritto_form()
+            self._on_refresh_iscritti_requested("", False)
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_iscritti_status(f"Errore creazione iscritto: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_iscritti_status(f"Errore rete creazione iscritto: {exc}")
+
+    def _on_delete_iscritto_requested(self, bambino_id: str) -> None:
+        if not bambino_id:
+            self.dashboard.append_iscritti_status("Seleziona un iscritto da eliminare")
+            return
+        try:
+            deleted = self.api.delete_bambino_admin(bambino_id)
+            self.dashboard.append_iscritti_status(
+                f"Iscritto disattivato: {deleted.get('cognome')} {deleted.get('nome')}"
+            )
+            self._on_refresh_iscritti_requested("", False)
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_iscritti_status(f"Errore eliminazione iscritto: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_iscritti_status(f"Errore rete eliminazione iscritto: {exc}")
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(
