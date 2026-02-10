@@ -16,6 +16,9 @@ Skeleton iniziale per sistema presenze asili con:
 │   └── desktop-python/
 │       ├── README.md
 │       └── ...
+│   └── admin-python/
+│       ├── README.md
+│       └── ...
 ├── server/
 │   ├── app/
 │   │   ├── config.py
@@ -77,12 +80,20 @@ curl http://localhost:8123/health
 
 - `GET /health`
 - `POST /auth/login`
+- `POST /admin/sedi`
+- `POST /admin/bambini`
+- `POST /admin/devices`
+- `POST /devices/claim`
 - `GET /devices/{device_id}`
 - `GET /catalog/bambini?dispositivo_id=...`
 - `POST /presenze/check-in`
 - `POST /presenze/check-out`
 - `POST /sync`
 - `GET /audit`
+
+## App desktop
+- Operatore: `/Users/matteocopelli/MEGA/PROGETTI/REGISTRO-ELETTRONICO/RegNidoV2/clients/desktop-python` (`python3 run.py`)
+- Admin: `/Users/matteocopelli/MEGA/PROGETTI/REGISTRO-ELETTRONICO/RegNidoV2/clients/admin-python` (`python3 run.py`)
 
 ## Note implementative attuali
 

@@ -57,3 +57,46 @@ class BambinoOut(BaseModel):
     cognome: str
     sede_id: uuid.UUID
     attivo: bool
+
+
+class SedeCreateIn(BaseModel):
+    nome: str
+
+
+class SedeOut(BaseModel):
+    id: uuid.UUID
+    nome: str
+    attiva: bool
+
+
+class BambinoCreateIn(BaseModel):
+    sede_id: uuid.UUID
+    nome: str
+    cognome: str
+    attivo: bool = True
+
+
+class DeviceCreateIn(BaseModel):
+    sede_id: uuid.UUID
+    nome: str
+    attivo: bool = True
+    activation_expires_minutes: int = 15
+
+
+class DeviceProvisionOut(BaseModel):
+    device_id: uuid.UUID
+    nome: str
+    sede_id: uuid.UUID
+    activation_code: str
+    activation_expires_at: datetime
+
+
+class DeviceClaimIn(BaseModel):
+    activation_code: str
+
+
+class DeviceClaimOut(BaseModel):
+    device_id: uuid.UUID
+    nome: str
+    sede_id: uuid.UUID
+    sede_nome: str

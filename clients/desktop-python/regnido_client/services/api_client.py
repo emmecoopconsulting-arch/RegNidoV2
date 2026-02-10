@@ -41,6 +41,15 @@ class ApiClient:
         self.set_token(token)
         return token
 
+    def claim_device(self, activation_code: str) -> dict[str, Any]:
+        response = httpx.post(
+            f"{self.base_url}/devices/claim",
+            json={"activation_code": activation_code},
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_device(self, device_id: str) -> dict[str, Any]:
         response = httpx.get(
             f"{self.base_url}/devices/{device_id}",

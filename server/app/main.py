@@ -1,4 +1,7 @@
+import secrets
+import string
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,19 +18,35 @@ from app.crud import (
     seed_roles_permissions,
 )
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import AuditLog, Bambino, Dispositivo, PresenceEventType, Sede, Utente
+from app.models import (
+    AuditLog,
+    Bambino,
+    DeviceActivation,
+    Dispositivo,
+    PresenceEventType,
+    Sede,
+    UserRole,
+    Utente,
+)
 from app.schemas import (
+    BambinoCreateIn,
     BambinoOut,
+    DeviceClaimIn,
+    DeviceClaimOut,
+    DeviceCreateIn,
     DeviceProfileOut,
+    DeviceProvisionOut,
     HealthOut,
     LoginIn,
     LoginOut,
     PresenceEventIn,
     PresenceEventOut,
+    SedeCreateIn,
+    SedeOut,
     SyncIn,
     SyncOut,
 )
-from app.security import create_access_token
+from app.security import create_access_token, hash_password, verify_password
 
 
 app = FastAPI(title="RegNido API", version="0.1.0")
@@ -73,6 +92,23 @@ def get_current_user(authorization: str = Header(default=""), db: Session = Depe
     return user
 
 
+def get_admin_user(user: Utente = Depends(get_current_user)) -> Utente:
+    if not user.ruolo or user.ruolo.code != UserRole.AMM_CENTRALE:
+        raise HTTPException(status_code=403, detail="Permessi insufficienti")
+    return user
+
+
+def generate_activation_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    chunk_a = "".join(secrets.choice(alphabet) for _ in range(4))
+    chunk_b = "".join(secrets.choice(alphabet) for _ in range(4))
+    return f"{chunk_a}-{chunk_b}"
+
+
+def normalize_activation_code(code: str) -> str:
+    return code.strip().upper().replace(" ", "")
+
+
 @app.get("/health", response_model=HealthOut)
 def health() -> HealthOut:
     return HealthOut(status="ok")
@@ -93,6 +129,168 @@ def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)) -> 
     )
     db.commit()
     return LoginOut(access_token=token)
+
+
+@app.post("/admin/sedi", response_model=SedeOut)
+def create_sede(payload: SedeCreateIn, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> SedeOut:
+    nome = payload.nome.strip()
+    if not nome:
+        raise HTTPException(status_code=400, detail="Nome sede obbligatorio")
+
+    existing = db.scalar(select(Sede).where(Sede.nome == nome))
+    if existing:
+        raise HTTPException(status_code=409, detail="Sede gia esistente")
+
+    sede = Sede(nome=nome, attiva=True)
+    db.add(sede)
+    db.flush()
+    append_audit(
+        db,
+        azione="admin:create_sede",
+        entita="sedi",
+        entita_id=str(sede.id),
+        esito="OK",
+        utente_id=user.id,
+    )
+    db.commit()
+    return SedeOut(id=sede.id, nome=sede.nome, attiva=sede.attiva)
+
+
+@app.post("/admin/bambini", response_model=BambinoOut)
+def create_bambino(payload: BambinoCreateIn, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> BambinoOut:
+    sede = db.scalar(select(Sede).where(Sede.id == payload.sede_id, Sede.attiva.is_(True)))
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede non trovata o disattivata")
+
+    nome = payload.nome.strip()
+    cognome = payload.cognome.strip()
+    if not nome or not cognome:
+        raise HTTPException(status_code=400, detail="Nome e cognome obbligatori")
+
+    bambino = Bambino(
+        sede_id=payload.sede_id,
+        nome=nome,
+        cognome=cognome,
+        attivo=payload.attivo,
+    )
+    db.add(bambino)
+    db.flush()
+    append_audit(
+        db,
+        azione="admin:create_bambino",
+        entita="bambini",
+        entita_id=str(bambino.id),
+        esito="OK",
+        utente_id=user.id,
+        dettagli={"sede_id": str(payload.sede_id)},
+    )
+    db.commit()
+    return BambinoOut(
+        id=bambino.id,
+        nome=bambino.nome,
+        cognome=bambino.cognome,
+        sede_id=bambino.sede_id,
+        attivo=bambino.attivo,
+    )
+
+
+@app.post("/admin/devices", response_model=DeviceProvisionOut)
+def create_device(payload: DeviceCreateIn, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> DeviceProvisionOut:
+    sede = db.scalar(select(Sede).where(Sede.id == payload.sede_id, Sede.attiva.is_(True)))
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede non trovata o disattivata")
+
+    nome = payload.nome.strip()
+    if not nome:
+        raise HTTPException(status_code=400, detail="Nome dispositivo obbligatorio")
+
+    expiry_minutes = max(1, min(payload.activation_expires_minutes, 1440))
+    activation_code = generate_activation_code()
+    activation_code_normalized = normalize_activation_code(activation_code)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expiry_minutes)
+
+    device = Dispositivo(nome=nome, sede_id=payload.sede_id, attivo=payload.attivo)
+    db.add(device)
+    db.flush()
+
+    activation = DeviceActivation(
+        device_id=device.id,
+        code_hash=hash_password(activation_code_normalized),
+        expires_at=expires_at,
+        claimed_at=None,
+        created_by=user.id,
+    )
+    db.add(activation)
+
+    append_audit(
+        db,
+        azione="admin:create_device",
+        entita="dispositivi",
+        entita_id=str(device.id),
+        esito="OK",
+        utente_id=user.id,
+        dettagli={"sede_id": str(payload.sede_id), "expires_at": expires_at.isoformat()},
+    )
+    db.commit()
+
+    return DeviceProvisionOut(
+        device_id=device.id,
+        nome=device.nome,
+        sede_id=device.sede_id,
+        activation_code=activation_code,
+        activation_expires_at=expires_at,
+    )
+
+
+@app.post("/devices/claim", response_model=DeviceClaimOut)
+def claim_device(payload: DeviceClaimIn, request: Request, db: Session = Depends(get_db)) -> DeviceClaimOut:
+    submitted = normalize_activation_code(payload.activation_code).replace("-", "")
+    if len(submitted) < 8:
+        raise HTTPException(status_code=400, detail="Activation code non valido")
+
+    now = datetime.now(timezone.utc)
+    activations = db.scalars(
+        select(DeviceActivation).where(
+            DeviceActivation.claimed_at.is_(None),
+            DeviceActivation.expires_at > now,
+        )
+    ).all()
+
+    match: DeviceActivation | None = None
+    for activation in activations:
+        if verify_password(submitted, activation.code_hash):
+            match = activation
+            break
+
+    if not match:
+        raise HTTPException(status_code=401, detail="Activation code non valido o scaduto")
+
+    device = db.scalar(select(Dispositivo).where(Dispositivo.id == match.device_id, Dispositivo.attivo.is_(True)))
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo non trovato o disattivato")
+
+    sede = db.scalar(select(Sede).where(Sede.id == device.sede_id))
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede dispositivo non trovata")
+
+    match.claimed_at = now
+    append_audit(
+        db,
+        azione="device:claim",
+        entita="dispositivi",
+        entita_id=str(device.id),
+        esito="OK",
+        dispositivo_id=device.id,
+        ip=request.client.host if request.client else None,
+    )
+    db.commit()
+
+    return DeviceClaimOut(
+        device_id=device.id,
+        nome=device.nome,
+        sede_id=sede.id,
+        sede_nome=sede.nome,
+    )
 
 
 @app.post("/presenze/check-in", response_model=PresenceEventOut)
@@ -159,7 +357,8 @@ def get_device_profile(device_id: uuid.UUID, user: Utente = Depends(get_current_
             Dispositivo.sede_id,
             Dispositivo.attivo,
             Sede.nome.label("sede_nome"),
-        ).join(Sede, Sede.id == Dispositivo.sede_id)
+        )
+        .join(Sede, Sede.id == Dispositivo.sede_id)
         .where(Dispositivo.id == device_id)
     ).first()
     if not row:
@@ -182,9 +381,7 @@ def list_bambini(
     db: Session = Depends(get_db),
 ) -> list[BambinoOut]:
     limit = min(max(limit, 1), 500)
-    device = db.scalar(
-        select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True))
-    )
+    device = db.scalar(select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True)))
     if not device:
         raise HTTPException(status_code=404, detail="Dispositivo non trovato o disattivato")
 

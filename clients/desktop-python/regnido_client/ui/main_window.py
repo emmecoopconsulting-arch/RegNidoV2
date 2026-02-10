@@ -10,6 +10,7 @@ from regnido_client.services.api_client import ApiClient
 from regnido_client.storage.local_store import LocalStore
 from regnido_client.ui.dashboard_view import DashboardView
 from regnido_client.ui.login_view import LoginView
+from regnido_client.ui.setup_view import SetupView
 from regnido_client.ui.settings_dialog import SettingsDialog
 
 
@@ -22,15 +23,20 @@ class MainWindow(QMainWindow):
         self.store = LocalStore(DB_PATH)
         self.api = ApiClient(self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL))
 
+        self.setup_view = SetupView()
         self.login_view = LoginView()
         self.dashboard = DashboardView()
 
         self.stack = QStackedWidget()
+        self.stack.addWidget(self.setup_view)
         self.stack.addWidget(self.login_view)
         self.stack.addWidget(self.dashboard)
         self.setCentralWidget(self.stack)
 
+        self.setup_view.save_requested.connect(self._on_setup_save_requested)
+        self.setup_view.test_requested.connect(self._on_setup_test_requested)
         self.login_view.login_requested.connect(self._on_login_requested)
+        self.login_view.setup_requested.connect(self._show_setup)
         self.dashboard.search_requested.connect(self._on_search_requested)
         self.dashboard.check_in_requested.connect(lambda b: self._submit_presence_event(b, "ENTRATA", "/presenze/check-in"))
         self.dashboard.check_out_requested.connect(lambda b: self._submit_presence_event(b, "USCITA", "/presenze/check-out"))
@@ -42,8 +48,16 @@ class MainWindow(QMainWindow):
         self.sync_timer.setInterval(30000)
         self.sync_timer.timeout.connect(self._sync_pending)
 
+        self.setup_view.set_values(
+            self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL),
+        )
+
+        device_id = self.store.get_setting("device_id", "")
         saved_token = self.store.get_setting("access_token", "")
-        if saved_token:
+        if not device_id:
+            self.stack.setCurrentWidget(self.setup_view)
+            self.setup_view.set_status("Inserisci URL backend e Device ID per iniziare")
+        elif saved_token:
             self.api.set_token(saved_token)
             self.stack.setCurrentWidget(self.dashboard)
             self.sync_timer.start()
@@ -80,6 +94,61 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.dashboard)
         self.sync_timer.start()
         self._post_login_refresh()
+
+    def _show_setup(self) -> None:
+        self.setup_view.set_values(
+            self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL),
+        )
+        self.stack.setCurrentWidget(self.setup_view)
+
+    def _on_setup_test_requested(self, api_base_url: str) -> None:
+        if not api_base_url:
+            self.setup_view.set_status("Inserisci API Base URL", is_error=True)
+            return
+        old_url = self.api.base_url
+        self.api.set_base_url(api_base_url)
+        ok = self.api.health()
+        self.api.set_base_url(old_url)
+        if ok:
+            self.setup_view.set_status("Backend raggiungibile")
+            return
+        self.setup_view.set_status("Backend non raggiungibile", is_error=True)
+
+    def _on_setup_save_requested(self, api_base_url: str, activation_code: str) -> None:
+        if not api_base_url:
+            self.setup_view.set_status("API Base URL obbligatorio", is_error=True)
+            return
+        if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
+            self.setup_view.set_status("API Base URL deve iniziare con http:// o https://", is_error=True)
+            return
+
+        self.store.set_setting("api_base_url", api_base_url)
+        self.api.set_base_url(api_base_url)
+
+        has_existing_device = bool(self.store.get_setting("device_id", ""))
+        if not activation_code and has_existing_device:
+            self.setup_view.set_status("Configurazione backend salvata")
+            self.stack.setCurrentWidget(self.login_view)
+            self._update_login_health()
+            return
+        if not activation_code:
+            self.setup_view.set_status("Activation Code obbligatorio al primo avvio", is_error=True)
+            return
+
+        try:
+            claim = self.api.claim_device(activation_code)
+            self.store.set_setting("device_id", claim["device_id"])
+            self.setup_view.set_status(f"Dispositivo attivato: {claim['nome']} ({claim['sede_nome']})")
+        except httpx.HTTPStatusError as exc:
+            self.setup_view.set_status(f"Attivazione fallita: {exc.response.text}", is_error=True)
+            return
+        except httpx.HTTPError as exc:
+            self.setup_view.set_status(f"Errore rete durante attivazione: {exc}", is_error=True)
+            return
+
+        self.setup_view.set_status("Configurazione salvata")
+        self.stack.setCurrentWidget(self.login_view)
+        self._update_login_health()
 
     def _post_login_refresh(self) -> None:
         self._refresh_device()

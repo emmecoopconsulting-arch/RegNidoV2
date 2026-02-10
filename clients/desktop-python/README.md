@@ -16,7 +16,24 @@ Client desktop MVP per RegNido con:
 - Python 3.11+
 - dipendenze in `requirements.txt`
 
-## Avvio
+## Avvio rapido (comando unico)
+Da root progetto:
+```bash
+python3 clients/desktop-python/run.py
+```
+
+Oppure dalla cartella client:
+```bash
+cd clients/desktop-python
+python3 run.py
+```
+
+Lo script:
+- crea `.venv` se manca
+- installa dipendenze da `requirements.txt` (solo se cambiate)
+- avvia l'app
+
+## Avvio manuale (alternativa)
 ```bash
 cd clients/desktop-python
 python3 -m venv .venv
@@ -26,13 +43,20 @@ python main.py
 ```
 
 ## Prima configurazione app
-1. Vai su `Impostazioni`
+1. Al primo avvio compare la schermata `Configurazione iniziale backend`
 2. Inserisci `API Base URL` (es: `http://localhost:8123`)
-3. Inserisci `Device ID` valido esistente sul server
-4. Esegui login
+3. Inserisci `Activation Code` generato da admin
+4. Clicca `Salva e continua`, poi esegui login
+
+## Provisioning dispositivo (admin)
+1. Login admin via API
+2. Crea sede: `POST /admin/sedi`
+3. Crea dispositivo: `POST /admin/devices`
+4. Copia `activation_code` restituito e inseriscilo nel client
 
 ## Endpoint server usati dal client
 - `GET /health`
+- `POST /devices/claim`
 - `POST /auth/login`
 - `GET /devices/{device_id}`
 - `GET /catalog/bambini?dispositivo_id=...`

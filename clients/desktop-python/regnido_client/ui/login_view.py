@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 class LoginView(QWidget):
     login_requested = Signal(str, str)
+    setup_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -23,13 +24,16 @@ class LoginView(QWidget):
         self.password_input.setEchoMode(QLineEdit.Password)
 
         self.login_button = QPushButton("Accedi")
+        self.setup_button = QPushButton("Configura backend")
         self.login_button.clicked.connect(self._emit_login)
+        self.setup_button.clicked.connect(self.setup_requested)
 
         form = QFormLayout()
         form.addRow("Username", self.username_input)
         form.addRow("Password", self.password_input)
 
         button_row = QHBoxLayout()
+        button_row.addWidget(self.setup_button)
         button_row.addStretch(1)
         button_row.addWidget(self.login_button)
 
