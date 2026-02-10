@@ -95,6 +95,15 @@ class ApiClient:
         response.raise_for_status()
         return response.json()
 
+    def list_sedi(self, admin_token: str) -> list[dict[str, Any]]:
+        response = httpx.get(
+            f"{self.base_url}/admin/sedi",
+            headers=self._headers_with_token(admin_token),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return list(response.json())
+
     def create_bambino(self, sede_id: str, nome: str, cognome: str, admin_token: str, attivo: bool = True) -> dict[str, Any]:
         response = httpx.post(
             f"{self.base_url}/admin/bambini",

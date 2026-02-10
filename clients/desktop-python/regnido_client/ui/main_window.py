@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
         self.setup_view.save_requested.connect(self._on_setup_save_requested)
         self.setup_view.test_requested.connect(self._on_setup_test_requested)
         self.setup_view.admin_login_requested.connect(self._on_admin_login_requested)
+        self.setup_view.admin_refresh_sedi_requested.connect(self._on_admin_refresh_sedi_requested)
         self.setup_view.admin_create_sede_requested.connect(self._on_admin_create_sede_requested)
         self.setup_view.admin_create_bambino_requested.connect(self._on_admin_create_bambino_requested)
         self.setup_view.admin_create_device_requested.connect(self._on_admin_create_device_requested)
@@ -162,6 +163,7 @@ class MainWindow(QMainWindow):
             self.setup_view.set_admin_enabled(True)
             self.setup_view.set_admin_status(f"Admin autenticato: {username}")
             self.setup_view.append_admin_output("Login admin OK")
+            self._on_admin_refresh_sedi_requested()
         except httpx.HTTPStatusError as exc:
             self.setup_view.set_admin_enabled(False)
             self.setup_view.set_admin_status("Login admin fallito", is_error=True)
@@ -169,6 +171,20 @@ class MainWindow(QMainWindow):
         except httpx.HTTPError as exc:
             self.setup_view.set_admin_enabled(False)
             self.setup_view.set_admin_status("Errore rete admin", is_error=True)
+            self.setup_view.append_admin_output(f"Errore rete: {exc}")
+
+    def _on_admin_refresh_sedi_requested(self) -> None:
+        if not self.admin_token:
+            self.setup_view.set_admin_status("Esegui login admin prima", is_error=True)
+            return
+        try:
+            rows = self.api.list_sedi(admin_token=self.admin_token)
+            sedi = [(row["id"], row["nome"]) for row in rows]
+            self.setup_view.set_sedi(sedi)
+            self.setup_view.append_admin_output(f"Sedi caricate: {len(sedi)}")
+        except httpx.HTTPStatusError as exc:
+            self.setup_view.append_admin_output(f"Errore elenco sedi: {exc.response.text}")
+        except httpx.HTTPError as exc:
             self.setup_view.append_admin_output(f"Errore rete: {exc}")
 
     def _on_admin_create_sede_requested(self, nome: str) -> None:
@@ -182,8 +198,8 @@ class MainWindow(QMainWindow):
             data = self.api.create_sede(nome=nome, admin_token=self.admin_token)
             sede_id = data["id"]
             self.setup_view.last_sede_id_label.setText(sede_id)
-            self.setup_view.bambino_sede_id_input.setText(sede_id)
-            self.setup_view.device_sede_id_input.setText(sede_id)
+            self._on_admin_refresh_sedi_requested()
+            self.setup_view.select_sede(sede_id)
             self.setup_view.append_admin_output(json.dumps(data, indent=2, ensure_ascii=False))
         except httpx.HTTPStatusError as exc:
             self.setup_view.append_admin_output(f"Errore crea sede: {exc.response.text}")

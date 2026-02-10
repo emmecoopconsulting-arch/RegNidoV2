@@ -62,6 +62,7 @@ Nota clock/fuso:
 - `GET /health`
 - `POST /devices/claim`
 - `POST /auth/login`
+- `GET /admin/sedi`
 - `GET /devices/{device_id}`
 - `GET /catalog/bambini?dispositivo_id=...`
 - `POST /presenze/check-in`

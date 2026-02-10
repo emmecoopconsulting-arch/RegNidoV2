@@ -1,6 +1,7 @@
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -19,6 +20,7 @@ class SetupView(QWidget):
     test_requested = Signal(str)
 
     admin_login_requested = Signal(str, str, str)
+    admin_refresh_sedi_requested = Signal()
     admin_create_sede_requested = Signal(str)
     admin_create_bambino_requested = Signal(str, str, str, bool)
     admin_create_device_requested = Signal(str, str, int)
@@ -42,17 +44,18 @@ class SetupView(QWidget):
         self.admin_status_label = QLabel("Admin non autenticato")
 
         self.sede_nome_input = QLineEdit()
+        self.refresh_sedi_button = QPushButton("Aggiorna sedi")
         self.create_sede_button = QPushButton("Crea sede")
         self.last_sede_id_label = QLabel("-")
 
-        self.bambino_sede_id_input = QLineEdit()
+        self.bambino_sede_combo = QComboBox()
         self.bambino_nome_input = QLineEdit()
         self.bambino_cognome_input = QLineEdit()
         self.bambino_attivo_checkbox = QCheckBox("Attivo")
         self.bambino_attivo_checkbox.setChecked(True)
         self.create_bambino_button = QPushButton("Crea bambino")
 
-        self.device_sede_id_input = QLineEdit()
+        self.device_sede_combo = QComboBox()
         self.device_nome_input = QLineEdit()
         self.device_expiry_input = QSpinBox()
         self.device_expiry_input.setMinimum(1)
@@ -67,6 +70,7 @@ class SetupView(QWidget):
         self.test_button.clicked.connect(self._emit_test)
         self.save_button.clicked.connect(self._emit_save)
         self.admin_login_button.clicked.connect(self._emit_admin_login)
+        self.refresh_sedi_button.clicked.connect(self.admin_refresh_sedi_requested)
         self.create_sede_button.clicked.connect(self._emit_admin_create_sede)
         self.create_bambino_button.clicked.connect(self._emit_admin_create_bambino)
         self.create_device_button.clicked.connect(self._emit_admin_create_device)
@@ -112,15 +116,16 @@ class SetupView(QWidget):
         sede_form = QFormLayout()
         sede_form.addRow("Nome sede", self.sede_nome_input)
         sede_form.addRow("Ultima sede ID", self.last_sede_id_label)
+        sede_form.addRow("", self.refresh_sedi_button)
 
         bambino_form = QFormLayout()
-        bambino_form.addRow("Sede ID", self.bambino_sede_id_input)
+        bambino_form.addRow("Sede", self.bambino_sede_combo)
         bambino_form.addRow("Nome", self.bambino_nome_input)
         bambino_form.addRow("Cognome", self.bambino_cognome_input)
         bambino_form.addRow("Stato", self.bambino_attivo_checkbox)
 
         device_form = QFormLayout()
-        device_form.addRow("Sede ID", self.device_sede_id_input)
+        device_form.addRow("Sede", self.device_sede_combo)
         device_form.addRow("Nome dispositivo", self.device_nome_input)
         device_form.addRow("Scadenza code (min)", self.device_expiry_input)
         device_form.addRow("Activation code", self.generated_activation_label)
@@ -148,6 +153,7 @@ class SetupView(QWidget):
         self.activation_input.setText(activation_code)
 
     def set_admin_enabled(self, enabled: bool) -> None:
+        self.refresh_sedi_button.setEnabled(enabled)
         self.create_sede_button.setEnabled(enabled)
         self.create_bambino_button.setEnabled(enabled)
         self.create_device_button.setEnabled(enabled)
@@ -164,6 +170,22 @@ class SetupView(QWidget):
     def set_generated_activation_code(self, code: str) -> None:
         self.generated_activation_label.setText(code)
         self.activation_input.setText(code)
+
+    def set_sedi(self, sedi: list[tuple[str, str]]) -> None:
+        self.bambino_sede_combo.clear()
+        self.device_sede_combo.clear()
+        for sede_id, sede_nome in sedi:
+            label = f"{sede_nome} ({sede_id[:8]})"
+            self.bambino_sede_combo.addItem(label, sede_id)
+            self.device_sede_combo.addItem(label, sede_id)
+
+    def select_sede(self, sede_id: str) -> None:
+        idx_b = self.bambino_sede_combo.findData(sede_id)
+        if idx_b >= 0:
+            self.bambino_sede_combo.setCurrentIndex(idx_b)
+        idx_d = self.device_sede_combo.findData(sede_id)
+        if idx_d >= 0:
+            self.device_sede_combo.setCurrentIndex(idx_d)
 
     def _emit_test(self) -> None:
         self.test_requested.emit(self.api_input.text().strip())
@@ -182,16 +204,18 @@ class SetupView(QWidget):
         self.admin_create_sede_requested.emit(self.sede_nome_input.text().strip())
 
     def _emit_admin_create_bambino(self) -> None:
+        sede_id = self.bambino_sede_combo.currentData()
         self.admin_create_bambino_requested.emit(
-            self.bambino_sede_id_input.text().strip(),
+            str(sede_id) if sede_id else "",
             self.bambino_nome_input.text().strip(),
             self.bambino_cognome_input.text().strip(),
             self.bambino_attivo_checkbox.isChecked(),
         )
 
     def _emit_admin_create_device(self) -> None:
+        sede_id = self.device_sede_combo.currentData()
         self.admin_create_device_requested.emit(
-            self.device_sede_id_input.text().strip(),
+            str(sede_id) if sede_id else "",
             self.device_nome_input.text().strip(),
             int(self.device_expiry_input.value()),
         )

@@ -110,7 +110,8 @@ def generate_activation_code() -> str:
 
 
 def normalize_activation_code(code: str) -> str:
-    return code.strip().upper().replace(" ", "")
+    # Canonical format used both at creation and claim time.
+    return code.strip().upper().replace(" ", "").replace("-", "")
 
 
 @app.get("/health", response_model=HealthOut)
@@ -158,6 +159,12 @@ def create_sede(payload: SedeCreateIn, user: Utente = Depends(get_admin_user), d
     )
     db.commit()
     return SedeOut(id=sede.id, nome=sede.nome, attiva=sede.attiva)
+
+
+@app.get("/admin/sedi", response_model=list[SedeOut])
+def list_sedi(user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> list[SedeOut]:
+    rows = db.scalars(select(Sede).order_by(Sede.nome.asc())).all()
+    return [SedeOut(id=row.id, nome=row.nome, attiva=row.attiva) for row in rows]
 
 
 @app.post("/admin/bambini", response_model=BambinoOut)
@@ -248,7 +255,7 @@ def create_device(payload: DeviceCreateIn, user: Utente = Depends(get_admin_user
 
 @app.post("/devices/claim", response_model=DeviceClaimOut)
 def claim_device(payload: DeviceClaimIn, request: Request, db: Session = Depends(get_db)) -> DeviceClaimOut:
-    submitted = normalize_activation_code(payload.activation_code).replace("-", "")
+    submitted = normalize_activation_code(payload.activation_code)
     if len(submitted) < 8:
         raise HTTPException(status_code=400, detail="Activation code non valido")
 
