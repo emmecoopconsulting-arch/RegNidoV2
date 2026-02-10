@@ -1,0 +1,159 @@
+import uuid
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError, jwt
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.crud import (
+    append_audit,
+    authenticate_user,
+    bootstrap_admin_if_needed,
+    create_presence_event,
+    seed_roles_permissions,
+)
+from app.db import Base, SessionLocal, engine, get_db
+from app.models import AuditLog, PresenceEventType, Utente
+from app.schemas import HealthOut, LoginIn, LoginOut, PresenceEventIn, PresenceEventOut, SyncIn, SyncOut
+from app.security import create_access_token
+
+
+app = FastAPI(title="RegNido API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[x.strip() for x in settings.cors_origins.split(",") if x.strip()] or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        seed_roles_permissions(db)
+        bootstrap_admin_if_needed(
+            db,
+            settings.bootstrap_admin_username,
+            settings.bootstrap_admin_password,
+            settings.bootstrap_admin_full_name,
+        )
+        db.commit()
+
+
+def get_current_user(authorization: str = Header(default=""), db: Session = Depends(get_db)) -> Utente:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token mancante")
+
+    token = authorization.replace("Bearer ", "", 1)
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+        user_id = payload.get("sub")
+        user_uuid = uuid.UUID(user_id)
+    except (JWTError, ValueError):
+        raise HTTPException(status_code=401, detail="Token non valido") from None
+
+    user = db.scalar(select(Utente).where(Utente.id == user_uuid, Utente.attivo.is_(True)))
+    if not user:
+        raise HTTPException(status_code=401, detail="Utente non trovato")
+    return user
+
+
+@app.get("/health", response_model=HealthOut)
+def health() -> HealthOut:
+    return HealthOut(status="ok")
+
+
+@app.post("/auth/login", response_model=LoginOut)
+def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)) -> LoginOut:
+    user = authenticate_user(db, payload.username, payload.password)
+    token = create_access_token(subject=str(user.id))
+    append_audit(
+        db,
+        azione="auth:login",
+        entita="utenti",
+        entita_id=str(user.id),
+        esito="OK",
+        utente_id=user.id,
+        ip=request.client.host if request.client else None,
+    )
+    db.commit()
+    return LoginOut(access_token=token)
+
+
+@app.post("/presenze/check-in", response_model=PresenceEventOut)
+def check_in(payload: PresenceEventIn, user: Utente = Depends(get_current_user), db: Session = Depends(get_db)) -> PresenceEventOut:
+    presenza = create_presence_event(
+        db,
+        tipo=PresenceEventType.ENTRATA,
+        bambino_id=payload.bambino_id,
+        dispositivo_id=payload.dispositivo_id,
+        client_event_id=payload.client_event_id,
+        timestamp_evento=payload.timestamp_evento,
+        creato_da=user.id,
+    )
+    db.commit()
+    return PresenceEventOut(id=presenza.id, tipo_evento=presenza.tipo_evento, timestamp_evento=presenza.timestamp_evento)
+
+
+@app.post("/presenze/check-out", response_model=PresenceEventOut)
+def check_out(payload: PresenceEventIn, user: Utente = Depends(get_current_user), db: Session = Depends(get_db)) -> PresenceEventOut:
+    presenza = create_presence_event(
+        db,
+        tipo=PresenceEventType.USCITA,
+        bambino_id=payload.bambino_id,
+        dispositivo_id=payload.dispositivo_id,
+        client_event_id=payload.client_event_id,
+        timestamp_evento=payload.timestamp_evento,
+        creato_da=user.id,
+    )
+    db.commit()
+    return PresenceEventOut(id=presenza.id, tipo_evento=presenza.tipo_evento, timestamp_evento=presenza.timestamp_evento)
+
+
+@app.post("/sync", response_model=SyncOut)
+def sync(payload: SyncIn, user: Utente = Depends(get_current_user), db: Session = Depends(get_db)) -> SyncOut:
+    accepted = 0
+    skipped = 0
+
+    for event in payload.eventi:
+        try:
+            tipo_evento = event.tipo_evento or PresenceEventType.ENTRATA
+            create_presence_event(
+                db,
+                tipo=tipo_evento,
+                bambino_id=event.bambino_id,
+                dispositivo_id=event.dispositivo_id,
+                client_event_id=event.client_event_id,
+                timestamp_evento=event.timestamp_evento,
+                creato_da=user.id,
+            )
+            accepted += 1
+        except HTTPException:
+            skipped += 1
+
+    db.commit()
+    return SyncOut(accepted=accepted, skipped=skipped)
+
+
+@app.get("/audit")
+def list_audit(user: Utente = Depends(get_current_user), db: Session = Depends(get_db)):
+    rows = db.scalars(select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(100)).all()
+    return [
+        {
+            "id": str(r.id),
+            "timestamp": r.timestamp,
+            "azione": r.azione,
+            "entita": r.entita,
+            "entita_id": r.entita_id,
+            "esito": r.esito,
+            "utente_id": str(r.utente_id) if r.utente_id else None,
+            "dispositivo_id": str(r.dispositivo_id) if r.dispositivo_id else None,
+            "dettagli": r.dettagli_json,
+        }
+        for r in rows
+    ]
