@@ -49,7 +49,6 @@ class MainWindow(QMainWindow):
         self.setup_view.admin_create_bambino_requested.connect(self._on_admin_create_bambino_requested)
         self.login_view.login_requested.connect(self._on_login_requested)
         self.login_view.setup_requested.connect(self._show_setup)
-        self.dashboard.search_requested.connect(self._on_search_requested)
         self.dashboard.check_in_requested.connect(lambda b: self._submit_presence_event(b, "ENTRATA", "/presenze/check-in"))
         self.dashboard.check_out_requested.connect(lambda b: self._submit_presence_event(b, "USCITA", "/presenze/check-out"))
         self.dashboard.sync_requested.connect(self._sync_pending)
@@ -689,7 +688,7 @@ class MainWindow(QMainWindow):
         if not device_id:
             self._ensure_device_registration()
         self._refresh_device()
-        self._on_search_requested(self.dashboard.search_input.text().strip())
+        self._on_search_requested("")
 
     def _refresh_device(self) -> None:
         device_id = self.store.get_setting("device_id", "")
@@ -706,14 +705,14 @@ class MainWindow(QMainWindow):
             self.dashboard.set_device_label("errore caricamento")
             self._show_error(f"Impossibile leggere dispositivo: {exc}")
 
-    def _on_search_requested(self, query: str) -> None:
+    def _on_search_requested(self, query: str = "") -> None:
         device_id = self.store.get_setting("device_id", "")
         if not device_id:
             self.dashboard.set_presence_rows([])
             return
 
         try:
-            rows = self.api.list_bambini_presence_state(dispositivo_id=device_id, q=query, limit=300)
+            rows = self.api.list_bambini_presence_state(dispositivo_id=device_id, limit=300)
             self.dashboard.set_presence_rows(rows)
             self.dashboard.set_connection_status("online", ok=True)
         except httpx.HTTPError:
@@ -738,7 +737,7 @@ class MainWindow(QMainWindow):
             self.api.submit_presence_event(endpoint, payload)
             self.dashboard.set_connection_status("online", ok=True)
             self._show_info(f"{tipo_evento} registrata")
-            self._on_search_requested(self.dashboard.search_input.text().strip())
+            self._on_search_requested("")
         except httpx.HTTPError as exc:
             self.store.enqueue_event(payload)
             self.store.mark_event_error(payload["client_event_id"], str(exc))
@@ -773,7 +772,7 @@ class MainWindow(QMainWindow):
             ids_to_remove = [row["client_event_id"] for row in pending][: accepted + skipped]
             self.store.remove_events(ids_to_remove)
             self.dashboard.set_connection_status("online", ok=True)
-            self._on_search_requested(self.dashboard.search_input.text().strip())
+            self._on_search_requested("")
         except httpx.HTTPError as exc:
             for row in pending:
                 self.store.mark_event_error(row["client_event_id"], str(exc))

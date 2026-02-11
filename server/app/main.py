@@ -1200,7 +1200,6 @@ def list_accessible_iscritti(
 @app.get("/catalog/presenze-stato", response_model=list[BambinoPresenceStateOut])
 def list_bambini_presence_state(
     dispositivo_id: uuid.UUID,
-    q: str | None = None,
     limit: int = 200,
     user: Utente = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -1214,11 +1213,7 @@ def list_bambini_presence_state(
         Bambino.sede_id == device.sede_id,
         Bambino.attivo.is_(True),
     )
-    if q:
-        q_norm = f"%{q.strip()}%"
-        stmt = stmt.where((Bambino.nome.ilike(q_norm)) | (Bambino.cognome.ilike(q_norm)))
-
-    bambini = db.scalars(stmt.order_by(Bambino.cognome.asc(), Bambino.nome.asc()).limit(limit)).all()
+    bambini = db.scalars(stmt.order_by(Bambino.nome.asc(), Bambino.cognome.asc()).limit(limit)).all()
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     result: list[BambinoPresenceStateOut] = []

@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
 
 
 class DashboardView(QWidget):
-    search_requested = Signal(str)
     check_in_requested = Signal(str)
     check_out_requested = Signal(str)
     sync_requested = Signal()
@@ -55,11 +54,6 @@ class DashboardView(QWidget):
         self.connection_label = QLabel("Stato rete: -")
         self.device_label = QLabel("Dispositivo: -")
         self.pending_label = QLabel("Pending sync: 0")
-
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Cerca bambino...")
-        self.search_input.textChanged.connect(lambda text: self.search_requested.emit(text.strip()))
-        self.search_input.textChanged.connect(self._filter_presence_rows)
 
         self.presenze_table = QTableWidget()
         self.presenze_table.setColumnCount(6)
@@ -93,7 +87,6 @@ class DashboardView(QWidget):
 
         body = QHBoxLayout()
         left = QVBoxLayout()
-        left.addWidget(self.search_input)
         left.addWidget(self.presenze_table)
         body.addLayout(left, 2)
         body.addLayout(actions, 1)
@@ -149,7 +142,13 @@ class DashboardView(QWidget):
         user_form_group.setLayout(user_form_group_layout)
 
         users_root = QVBoxLayout()
-        users_root.addWidget(QLabel("Utenti registrati"))
+        users_top = QHBoxLayout()
+        users_top.addWidget(QLabel("Utenti registrati"))
+        users_top.addStretch(1)
+        users_home_button = QPushButton("Home Presenze")
+        users_home_button.clicked.connect(lambda: self.go_to_section("presenze"))
+        users_top.addWidget(users_home_button)
+        users_root.addLayout(users_top)
         users_root.addWidget(self.users_list_widget)
         users_root.addWidget(user_form_group)
         users_root.addWidget(self.users_status)
@@ -200,6 +199,13 @@ class DashboardView(QWidget):
         iscritti_form_group.setLayout(iscritti_form_group_layout)
 
         iscritti_root = QVBoxLayout()
+        iscritti_top = QHBoxLayout()
+        iscritti_top.addWidget(QLabel("Gestione iscritti"))
+        iscritti_top.addStretch(1)
+        iscritti_home_button = QPushButton("Home Presenze")
+        iscritti_home_button.clicked.connect(lambda: self.go_to_section("presenze"))
+        iscritti_top.addWidget(iscritti_home_button)
+        iscritti_root.addLayout(iscritti_top)
         iscritti_root.addLayout(iscritti_filter_row)
         iscritti_root.addWidget(self.iscritti_list_widget)
         iscritti_root.addWidget(iscritti_form_group)
@@ -230,6 +236,13 @@ class DashboardView(QWidget):
         sedi_form.addRow("Nome sede", self.sedi_nome_input)
 
         sedi_root = QVBoxLayout()
+        sedi_top = QHBoxLayout()
+        sedi_top.addWidget(QLabel("Gestione sedi"))
+        sedi_top.addStretch(1)
+        sedi_home_button = QPushButton("Home Presenze")
+        sedi_home_button.clicked.connect(lambda: self.go_to_section("presenze"))
+        sedi_top.addWidget(sedi_home_button)
+        sedi_root.addLayout(sedi_top)
         sedi_root.addLayout(sedi_form)
         sedi_root.addLayout(sedi_actions)
         sedi_root.addWidget(self.sedi_list_widget)
@@ -282,6 +295,13 @@ class DashboardView(QWidget):
         history_filters.addWidget(self.export_history_button)
 
         history_root = QVBoxLayout()
+        history_top = QHBoxLayout()
+        history_top.addWidget(QLabel("Storico presenze"))
+        history_top.addStretch(1)
+        history_home_button = QPushButton("Home Presenze")
+        history_home_button.clicked.connect(lambda: self.go_to_section("presenze"))
+        history_top.addWidget(history_home_button)
+        history_root.addLayout(history_top)
         history_root.addLayout(history_filters)
         history_root.addWidget(self.history_table)
         history_root.addWidget(self.history_status)
@@ -355,7 +375,7 @@ class DashboardView(QWidget):
             }
 
         self._update_presence_timers()
-        self._filter_presence_rows(self.search_input.text().strip())
+        self._show_all_presence_rows()
 
     def _update_presence_timers(self) -> None:
         now = datetime.now(timezone.utc)
@@ -376,13 +396,10 @@ class DashboardView(QWidget):
             enter_button.setEnabled(not dentro)
             exit_button.setEnabled(dentro)
 
-    def _filter_presence_rows(self, query: str) -> None:
-        query_norm = query.strip().lower()
+    def _show_all_presence_rows(self) -> None:
         for data in self._presence_rows.values():
             row_idx = int(data["row"])
-            display_name = str(data["display_name"])
-            hidden = bool(query_norm) and query_norm not in display_name
-            self.presenze_table.setRowHidden(row_idx, hidden)
+            self.presenze_table.setRowHidden(row_idx, False)
 
     def _parse_iso_dt(self, value: object) -> datetime | None:
         if isinstance(value, str) and value:
