@@ -320,6 +320,70 @@ class ApiClient:
         response.raise_for_status()
         return list(response.json())
 
+    def list_accessible_sedi(self) -> list[dict[str, Any]]:
+        response = httpx.get(
+            f"{self.base_url}/catalog/sedi-accessibili",
+            headers=self._headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return list(response.json())
+
+    def list_accessible_iscritti(self, sede_id: str | None = None, include_inactive: bool = False) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"include_inactive": include_inactive}
+        if sede_id:
+            params["sede_id"] = sede_id
+        response = httpx.get(
+            f"{self.base_url}/catalog/iscritti-accessibili",
+            params=params,
+            headers=self._headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return list(response.json())
+
+    def list_presence_history(
+        self,
+        unita: str,
+        periodo: str,
+        sede_id: str | None = None,
+        bambino_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"unita": unita, "periodo": periodo}
+        if sede_id:
+            params["sede_id"] = sede_id
+        if bambino_id:
+            params["bambino_id"] = bambino_id
+        response = httpx.get(
+            f"{self.base_url}/presenze/storico",
+            params=params,
+            headers=self._headers(),
+            timeout=12.0,
+        )
+        response.raise_for_status()
+        return dict(response.json())
+
+    def export_presence_history_pdf(
+        self,
+        unita: str,
+        periodo: str,
+        sede_id: str | None = None,
+        bambino_id: str | None = None,
+    ) -> bytes:
+        params: dict[str, Any] = {"unita": unita, "periodo": periodo}
+        if sede_id:
+            params["sede_id"] = sede_id
+        if bambino_id:
+            params["bambino_id"] = bambino_id
+        response = httpx.get(
+            f"{self.base_url}/presenze/storico/export-pdf",
+            params=params,
+            headers=self._headers(),
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        return response.content
+
     def submit_presence_event(self, endpoint: str, payload: dict[str, str]) -> None:
         response = httpx.post(
             f"{self.base_url}{endpoint}",

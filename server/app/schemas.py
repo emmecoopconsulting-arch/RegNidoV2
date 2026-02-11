@@ -45,6 +45,7 @@ class AuthMeOut(BaseModel):
     username: str
     role: UserRole
     groups: list[str]
+    sede_id: uuid.UUID | None = None
 
 
 class PresenceEventIn(BaseModel):
@@ -100,6 +101,9 @@ class BambinoPresenceStateOut(BaseModel):
     attivo: bool
     dentro: bool
     entrata_aperta_da: datetime | None = None
+    ultimo_ingresso: datetime | None = None
+    ultima_uscita: datetime | None = None
+    tempo_totale_secondi: int = 0
 
 
 class SedeCreateIn(BaseModel):
@@ -219,3 +223,22 @@ class UserOut(BaseModel):
     groups: list[str]
     attivo: bool
     sede_id: uuid.UUID | None = None
+
+
+class PresenceHistoryRowOut(BaseModel):
+    bambino_id: uuid.UUID
+    nome: str
+    cognome: str
+    sede_id: uuid.UUID
+    sede_nome: str
+    ingresso: datetime | None = None
+    uscita: datetime | None = None
+    tempo_totale_secondi: int = 0
+
+
+class PresenceHistoryOut(BaseModel):
+    unita: str
+    periodo: str
+    period_start_utc: datetime
+    period_end_utc: datetime
+    rows: list[PresenceHistoryRowOut]

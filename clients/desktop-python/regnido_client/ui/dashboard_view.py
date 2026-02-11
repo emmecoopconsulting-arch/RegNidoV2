@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QDate, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -35,6 +36,9 @@ class DashboardView(QWidget):
     refresh_iscritti_requested = Signal(str, bool)
     create_iscritto_requested = Signal(str, str, str, bool)
     delete_iscritto_requested = Signal(str)
+    refresh_history_requested = Signal(str, str, str, str)
+    export_history_requested = Signal(str, str, str, str)
+    history_sede_changed = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -52,8 +56,8 @@ class DashboardView(QWidget):
         self.search_input.textChanged.connect(self._filter_presence_rows)
 
         self.presenze_table = QTableWidget()
-        self.presenze_table.setColumnCount(4)
-        self.presenze_table.setHorizontalHeaderLabels(["Bambino", "Timer frequenza", "Entra", "Esce"])
+        self.presenze_table.setColumnCount(6)
+        self.presenze_table.setHorizontalHeaderLabels(["Bambino", "Ingresso", "Uscita", "Tempo totale", "Entra", "Esce"])
         self.presenze_table.verticalHeader().setVisible(False)
         self.presenze_table.setSelectionMode(QTableWidget.NoSelection)
         self.presenze_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -197,8 +201,60 @@ class DashboardView(QWidget):
         iscritti_tab = QWidget()
         iscritti_tab.setLayout(iscritti_root)
 
+        self.history_unit_combo = QComboBox()
+        self.history_unit_combo.addItem("Giorno", "giorno")
+        self.history_unit_combo.addItem("Mese", "mese")
+        self.history_day_input = QDateEdit()
+        self.history_day_input.setCalendarPopup(True)
+        self.history_day_input.setDate(QDate.currentDate())
+        self.history_month_input = QDateEdit()
+        self.history_month_input.setCalendarPopup(True)
+        self.history_month_input.setDisplayFormat("yyyy-MM")
+        self.history_month_input.setDate(QDate.currentDate())
+        self.history_sede_combo = QComboBox()
+        self.history_iscritto_combo = QComboBox()
+        self.refresh_history_button = QPushButton("Aggiorna storico")
+        self.export_history_button = QPushButton("Esporta PDF")
+        self.history_status = QTextEdit()
+        self.history_status.setReadOnly(True)
+        self.history_status.setMaximumHeight(140)
+        self.history_table = QTableWidget()
+        self.history_table.setColumnCount(5)
+        self.history_table.setHorizontalHeaderLabels(["Iscritto", "Sede", "Ingresso", "Uscita", "Tempo totale"])
+        self.history_table.verticalHeader().setVisible(False)
+        self.history_table.setSelectionMode(QTableWidget.NoSelection)
+        self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        self.history_unit_combo.currentIndexChanged.connect(self._toggle_history_period_inputs)
+        self.history_sede_combo.currentIndexChanged.connect(self._emit_history_sede_changed)
+        self.refresh_history_button.clicked.connect(self._emit_refresh_history)
+        self.export_history_button.clicked.connect(self._emit_export_history)
+
+        history_filters = QHBoxLayout()
+        history_filters.addWidget(QLabel("Unità"))
+        history_filters.addWidget(self.history_unit_combo)
+        history_filters.addWidget(QLabel("Giorno"))
+        history_filters.addWidget(self.history_day_input)
+        history_filters.addWidget(QLabel("Mese"))
+        history_filters.addWidget(self.history_month_input)
+        history_filters.addWidget(QLabel("Sede"))
+        history_filters.addWidget(self.history_sede_combo)
+        history_filters.addWidget(QLabel("Iscritto"))
+        history_filters.addWidget(self.history_iscritto_combo)
+        history_filters.addStretch(1)
+        history_filters.addWidget(self.refresh_history_button)
+        history_filters.addWidget(self.export_history_button)
+
+        history_root = QVBoxLayout()
+        history_root.addLayout(history_filters)
+        history_root.addWidget(self.history_table)
+        history_root.addWidget(self.history_status)
+        history_tab = QWidget()
+        history_tab.setLayout(history_root)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(presenze_tab, "Presenze")
+        self.tabs.addTab(history_tab, "Storico")
         self._user_tab_index = self.tabs.addTab(users_tab, "Gestione utenti")
         self._iscritti_tab_index = self.tabs.addTab(iscritti_tab, "Iscritti")
         self.tabs.setTabVisible(self._user_tab_index, False)
@@ -212,6 +268,7 @@ class DashboardView(QWidget):
         self._presence_timer.setInterval(1000)
         self._presence_timer.timeout.connect(self._update_presence_timers)
         self._presence_timer.start()
+        self._toggle_history_period_inputs()
 
     def set_presence_rows(self, rows: list[dict]) -> None:
         self._presence_rows = {}
@@ -228,26 +285,32 @@ class DashboardView(QWidget):
                     start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
                 except ValueError:
                     start_dt = None
+            ingresso_dt = self._parse_iso_dt(row.get("ultimo_ingresso"))
+            uscita_dt = self._parse_iso_dt(row.get("ultima_uscita"))
+            closed_seconds = max(0, int(row.get("tempo_totale_secondi", 0) or 0))
 
             display_name = f"{cognome} {nome}".strip()
             self.presenze_table.setItem(idx, 0, QTableWidgetItem(display_name))
+            self.presenze_table.setItem(idx, 1, QTableWidgetItem(self._format_datetime(ingresso_dt)))
+            self.presenze_table.setItem(idx, 2, QTableWidgetItem(self._format_datetime(uscita_dt)))
 
-            timer_label = QLabel("00:00:00")
-            self.presenze_table.setCellWidget(idx, 1, timer_label)
+            total_label = QLabel(self._format_duration(closed_seconds))
+            self.presenze_table.setCellWidget(idx, 3, total_label)
 
             enter_button = QPushButton("Entra")
             exit_button = QPushButton("Esce")
             enter_button.clicked.connect(lambda _=False, b_id=bambino_id: self.check_in_requested.emit(b_id))
             exit_button.clicked.connect(lambda _=False, b_id=bambino_id: self.check_out_requested.emit(b_id))
-            self.presenze_table.setCellWidget(idx, 2, enter_button)
-            self.presenze_table.setCellWidget(idx, 3, exit_button)
+            self.presenze_table.setCellWidget(idx, 4, enter_button)
+            self.presenze_table.setCellWidget(idx, 5, exit_button)
 
             self._presence_rows[bambino_id] = {
                 "row": idx,
                 "display_name": display_name.lower(),
                 "dentro": dentro,
                 "start_dt": start_dt,
-                "timer_label": timer_label,
+                "closed_seconds": closed_seconds,
+                "total_label": total_label,
                 "enter_button": enter_button,
                 "exit_button": exit_button,
             }
@@ -260,18 +323,16 @@ class DashboardView(QWidget):
         for data in self._presence_rows.values():
             dentro = bool(data["dentro"])
             start_dt = data["start_dt"]
-            timer_label: QLabel = data["timer_label"]
+            closed_seconds = int(data["closed_seconds"])
+            total_label: QLabel = data["total_label"]
             enter_button: QPushButton = data["enter_button"]
             exit_button: QPushButton = data["exit_button"]
 
             if dentro and isinstance(start_dt, datetime):
-                elapsed = max(0, int((now - start_dt).total_seconds()))
-                h = elapsed // 3600
-                m = (elapsed % 3600) // 60
-                s = elapsed % 60
-                timer_label.setText(f"{h:02d}:{m:02d}:{s:02d}")
+                elapsed_live = max(0, int((now - start_dt).total_seconds()))
+                total_label.setText(self._format_duration(closed_seconds + elapsed_live))
             else:
-                timer_label.setText("00:00:00")
+                total_label.setText(self._format_duration(closed_seconds))
 
             enter_button.setEnabled(not dentro)
             exit_button.setEnabled(dentro)
@@ -283,6 +344,81 @@ class DashboardView(QWidget):
             display_name = str(data["display_name"])
             hidden = bool(query_norm) and query_norm not in display_name
             self.presenze_table.setRowHidden(row_idx, hidden)
+
+    def _parse_iso_dt(self, value: object) -> datetime | None:
+        if isinstance(value, str) and value:
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
+
+    def _format_datetime(self, value: datetime | None) -> str:
+        if not isinstance(value, datetime):
+            return "-"
+        return value.astimezone().strftime("%d/%m/%Y %H:%M")
+
+    def _format_duration(self, seconds: int) -> str:
+        total = max(0, int(seconds))
+        h = total // 3600
+        m = (total % 3600) // 60
+        s = total % 60
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
+    def _toggle_history_period_inputs(self) -> None:
+        is_day = str(self.history_unit_combo.currentData()) == "giorno"
+        self.history_day_input.setEnabled(is_day)
+        self.history_month_input.setEnabled(not is_day)
+
+    def set_history_sedi(self, sedi: list[tuple[str, str]]) -> None:
+        self.history_sede_combo.clear()
+        self.history_sede_combo.addItem("Tutte le sedi", "")
+        for sede_id, sede_nome in sedi:
+            self.history_sede_combo.addItem(f"{sede_nome} ({sede_id[:8]})", sede_id)
+
+    def set_history_iscritti(self, iscritti: list[dict[str, str]]) -> None:
+        self.history_iscritto_combo.clear()
+        self.history_iscritto_combo.addItem("Tutti gli iscritti", "")
+        for row in iscritti:
+            bambino_id = str(row.get("id", ""))
+            label = f"{row.get('cognome', '-')} {row.get('nome', '-')}"
+            self.history_iscritto_combo.addItem(label, bambino_id)
+
+    def set_history_rows(self, rows: list[dict[str, object]]) -> None:
+        self.history_table.setRowCount(len(rows))
+        for idx, row in enumerate(rows):
+            label_iscritto = f"{row.get('cognome', '-')} {row.get('nome', '-')}".strip()
+            ingresso = self._format_datetime(self._parse_iso_dt(row.get("ingresso")))
+            uscita = self._format_datetime(self._parse_iso_dt(row.get("uscita")))
+            totale = self._format_duration(int(row.get("tempo_totale_secondi", 0) or 0))
+
+            self.history_table.setItem(idx, 0, QTableWidgetItem(label_iscritto))
+            self.history_table.setItem(idx, 1, QTableWidgetItem(str(row.get("sede_nome", "-"))))
+            self.history_table.setItem(idx, 2, QTableWidgetItem(ingresso))
+            self.history_table.setItem(idx, 3, QTableWidgetItem(uscita))
+            self.history_table.setItem(idx, 4, QTableWidgetItem(totale))
+
+    def append_history_status(self, message: str) -> None:
+        self.history_status.append(message)
+
+    def history_filters(self) -> tuple[str, str, str, str]:
+        unita = str(self.history_unit_combo.currentData())
+        if unita == "giorno":
+            periodo = self.history_day_input.date().toString("yyyy-MM-dd")
+        else:
+            periodo = self.history_month_input.date().toString("yyyy-MM")
+        sede_id = str(self.history_sede_combo.currentData() or "")
+        bambino_id = str(self.history_iscritto_combo.currentData() or "")
+        return unita, periodo, sede_id, bambino_id
+
+    def _emit_refresh_history(self) -> None:
+        self.refresh_history_requested.emit(*self.history_filters())
+
+    def _emit_export_history(self) -> None:
+        self.export_history_requested.emit(*self.history_filters())
+
+    def _emit_history_sede_changed(self) -> None:
+        self.history_sede_changed.emit(str(self.history_sede_combo.currentData() or ""))
 
     def set_connection_status(self, message: str, ok: bool) -> None:
         color = "#1e6a2f" if ok else "#b00020"

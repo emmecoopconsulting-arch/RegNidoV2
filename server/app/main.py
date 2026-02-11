@@ -1,10 +1,13 @@
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -59,6 +62,8 @@ from app.schemas import (
     HealthOut,
     LoginIn,
     LoginOut,
+    PresenceHistoryOut,
+    PresenceHistoryRowOut,
     PresenceEventIn,
     PresenceEventOut,
     SedeCreateIn,
@@ -146,6 +151,152 @@ def generate_activation_code() -> str:
 def normalize_activation_code(code: str) -> str:
     # Canonical format used both at creation and claim time.
     return code.strip().upper().replace(" ", "").replace("-", "")
+
+
+def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+    return start, end
+
+
+def parse_period_bounds(unita: str, periodo: str) -> tuple[datetime, datetime]:
+    unita_norm = unita.strip().lower()
+    periodo_norm = periodo.strip()
+    if unita_norm == "giorno":
+        try:
+            parsed_day = date.fromisoformat(periodo_norm)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato periodo non valido per 'giorno' (atteso YYYY-MM-DD)") from None
+        start = datetime(parsed_day.year, parsed_day.month, parsed_day.day, tzinfo=timezone.utc)
+        return start, start + timedelta(days=1)
+    if unita_norm == "mese":
+        try:
+            year_str, month_str = periodo_norm.split("-", 1)
+            year = int(year_str)
+            month = int(month_str)
+            if month < 1 or month > 12:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato periodo non valido per 'mese' (atteso YYYY-MM)") from None
+        return _month_bounds(year, month)
+    raise HTTPException(status_code=400, detail="Unita temporale non valida: usare 'giorno' o 'mese'")
+
+
+def allowed_sedi_for_user(db: Session, user: Utente) -> list[Sede]:
+    if user.ruolo and user.ruolo.code == UserRole.AMM_CENTRALE:
+        return db.scalars(select(Sede).order_by(Sede.nome.asc())).all()
+    if not user.sede_id:
+        raise HTTPException(status_code=400, detail="Utente non associato a una sede")
+    sede = db.scalar(select(Sede).where(Sede.id == user.sede_id))
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede utente non trovata")
+    return [sede]
+
+
+def compute_presence_summary(
+    events: list[Presenza],
+    period_start: datetime,
+    period_end: datetime,
+) -> tuple[datetime | None, datetime | None, int, datetime | None]:
+    if not events:
+        return None, None, 0, None
+
+    ingresso = next((ev.timestamp_evento for ev in events if ev.tipo_evento == PresenceEventType.ENTRATA), None)
+    uscita = next((ev.timestamp_evento for ev in reversed(events) if ev.tipo_evento == PresenceEventType.USCITA), None)
+
+    total_seconds = 0
+    open_entry: datetime | None = None
+    for ev in events:
+        if ev.tipo_evento == PresenceEventType.ENTRATA:
+            open_entry = max(ev.timestamp_evento, period_start)
+            continue
+        if ev.tipo_evento == PresenceEventType.USCITA and open_entry:
+            if ev.timestamp_evento > open_entry:
+                total_seconds += int((ev.timestamp_evento - open_entry).total_seconds())
+            open_entry = None
+
+    if open_entry:
+        now = datetime.now(timezone.utc)
+        cutoff = min(now, period_end)
+        if cutoff > open_entry:
+            total_seconds += int((cutoff - open_entry).total_seconds())
+    return ingresso, uscita, total_seconds, open_entry
+
+
+def _safe_name_part(raw: str) -> str:
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    normalized = "".join(ch if ch in allowed else "_" for ch in raw.strip())
+    compact = "_".join(part for part in normalized.split("_") if part)
+    return compact[:80] or "ND"
+
+
+def build_presence_history_rows(
+    db: Session,
+    *,
+    user: Utente,
+    period_start: datetime,
+    period_end: datetime,
+    sede_id: uuid.UUID | None = None,
+    bambino_id: uuid.UUID | None = None,
+) -> list[PresenceHistoryRowOut]:
+    sedi = allowed_sedi_for_user(db, user)
+    allowed_sede_ids = {row.id for row in sedi}
+    sede_name_map = {row.id: row.nome for row in sedi}
+
+    if sede_id:
+        if sede_id not in allowed_sede_ids:
+            raise HTTPException(status_code=403, detail="Sede non autorizzata per questo utente")
+        target_sede_ids = {sede_id}
+    else:
+        target_sede_ids = allowed_sede_ids
+
+    bambini_stmt = select(Bambino).where(Bambino.sede_id.in_(target_sede_ids))
+    if bambino_id:
+        bambini_stmt = bambini_stmt.where(Bambino.id == bambino_id)
+    bambini = db.scalars(bambini_stmt).all()
+    if not bambini:
+        return []
+
+    bambini_map = {row.id: row for row in bambini}
+    eventi = db.scalars(
+        select(Presenza)
+        .where(
+            Presenza.bambino_id.in_(list(bambini_map.keys())),
+            Presenza.sede_id.in_(target_sede_ids),
+            Presenza.timestamp_evento >= period_start,
+            Presenza.timestamp_evento < period_end,
+        )
+        .order_by(Presenza.bambino_id.asc(), Presenza.timestamp_evento.asc())
+    ).all()
+
+    grouped: dict[uuid.UUID, list[Presenza]] = {}
+    for ev in eventi:
+        grouped.setdefault(ev.bambino_id, []).append(ev)
+
+    rows: list[PresenceHistoryRowOut] = []
+    for current_bambino_id, child_events in grouped.items():
+        bambino = bambini_map.get(current_bambino_id)
+        if not bambino:
+            continue
+        ingresso, uscita, total_seconds, _ = compute_presence_summary(child_events, period_start, period_end)
+        rows.append(
+            PresenceHistoryRowOut(
+                bambino_id=bambino.id,
+                nome=bambino.nome,
+                cognome=bambino.cognome,
+                sede_id=bambino.sede_id,
+                sede_nome=sede_name_map.get(bambino.sede_id, str(bambino.sede_id)),
+                ingresso=ingresso,
+                uscita=uscita,
+                tempo_totale_secondi=total_seconds,
+            )
+        )
+
+    rows.sort(key=lambda row: (row.cognome.lower(), row.nome.lower()))
+    return rows
 
 
 @app.get("/health", response_model=HealthOut)
@@ -343,6 +494,7 @@ def auth_me(user: Utente = Depends(get_current_user)) -> AuthMeOut:
         username=user.username,
         role=user.ruolo.code,
         groups=user_groups(user),
+        sede_id=user.sede_id,
     )
 
 
@@ -973,6 +1125,42 @@ def list_bambini(
     ]
 
 
+@app.get("/catalog/sedi-accessibili", response_model=list[SedeOut])
+def list_accessible_sedi(user: Utente = Depends(get_current_user), db: Session = Depends(get_db)) -> list[SedeOut]:
+    sedi = allowed_sedi_for_user(db, user)
+    return [SedeOut(id=row.id, nome=row.nome, attiva=row.attiva) for row in sedi]
+
+
+@app.get("/catalog/iscritti-accessibili", response_model=list[BambinoOut])
+def list_accessible_iscritti(
+    sede_id: uuid.UUID | None = None,
+    include_inactive: bool = False,
+    user: Utente = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[BambinoOut]:
+    sedi = allowed_sedi_for_user(db, user)
+    allowed_sede_ids = {row.id for row in sedi}
+
+    if sede_id and sede_id not in allowed_sede_ids:
+        raise HTTPException(status_code=403, detail="Sede non autorizzata per questo utente")
+
+    stmt = select(Bambino).where(Bambino.sede_id.in_([sede_id] if sede_id else list(allowed_sede_ids)))
+    if not include_inactive:
+        stmt = stmt.where(Bambino.attivo.is_(True))
+
+    rows = db.scalars(stmt.order_by(Bambino.cognome.asc(), Bambino.nome.asc())).all()
+    return [
+        BambinoOut(
+            id=row.id,
+            nome=row.nome,
+            cognome=row.cognome,
+            sede_id=row.sede_id,
+            attivo=row.attivo,
+        )
+        for row in rows
+    ]
+
+
 @app.get("/catalog/presenze-stato", response_model=list[BambinoPresenceStateOut])
 def list_bambini_presence_state(
     dispositivo_id: uuid.UUID,
@@ -995,6 +1183,8 @@ def list_bambini_presence_state(
         stmt = stmt.where((Bambino.nome.ilike(q_norm)) | (Bambino.cognome.ilike(q_norm)))
 
     bambini = db.scalars(stmt.order_by(Bambino.cognome.asc(), Bambino.nome.asc()).limit(limit)).all()
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + timedelta(days=1)
     result: list[BambinoPresenceStateOut] = []
     for bambino in bambini:
         latest = db.scalar(
@@ -1004,6 +1194,19 @@ def list_bambini_presence_state(
         )
         dentro = bool(latest and latest.tipo_evento == PresenceEventType.ENTRATA)
         entrata_aperta_da = latest.timestamp_evento if dentro else None
+        events_today = db.scalars(
+            select(Presenza)
+            .where(
+                Presenza.bambino_id == bambino.id,
+                Presenza.sede_id == device.sede_id,
+                Presenza.timestamp_evento >= today_start,
+                Presenza.timestamp_evento < today_end,
+            )
+            .order_by(Presenza.timestamp_evento.asc())
+        ).all()
+        ultimo_ingresso, ultima_uscita, tempo_totale_secondi, _ = compute_presence_summary(
+            events_today, today_start, today_end
+        )
         result.append(
             BambinoPresenceStateOut(
                 id=bambino.id,
@@ -1013,9 +1216,133 @@ def list_bambini_presence_state(
                 attivo=bambino.attivo,
                 dentro=dentro,
                 entrata_aperta_da=entrata_aperta_da,
+                ultimo_ingresso=ultimo_ingresso,
+                ultima_uscita=ultima_uscita,
+                tempo_totale_secondi=tempo_totale_secondi,
             )
         )
     return result
+
+
+@app.get("/presenze/storico", response_model=PresenceHistoryOut)
+def list_presence_history(
+    unita: str,
+    periodo: str,
+    sede_id: uuid.UUID | None = None,
+    bambino_id: uuid.UUID | None = None,
+    user: Utente = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PresenceHistoryOut:
+    period_start, period_end = parse_period_bounds(unita, periodo)
+    rows = build_presence_history_rows(
+        db,
+        user=user,
+        period_start=period_start,
+        period_end=period_end,
+        sede_id=sede_id,
+        bambino_id=bambino_id,
+    )
+    return PresenceHistoryOut(
+        unita=unita.strip().lower(),
+        periodo=periodo.strip(),
+        period_start_utc=period_start,
+        period_end_utc=period_end,
+        rows=rows,
+    )
+
+
+@app.get("/presenze/storico/export-pdf")
+def export_presence_history_pdf(
+    unita: str,
+    periodo: str,
+    sede_id: uuid.UUID | None = None,
+    bambino_id: uuid.UUID | None = None,
+    user: Utente = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    period_start, period_end = parse_period_bounds(unita, periodo)
+    rows = build_presence_history_rows(
+        db,
+        user=user,
+        period_start=period_start,
+        period_end=period_end,
+        sede_id=sede_id,
+        bambino_id=bambino_id,
+    )
+    sedi = allowed_sedi_for_user(db, user)
+    sedi_by_id = {item.id: item.nome for item in sedi}
+
+    iscritto_label = "Tutti"
+    if bambino_id:
+        target_bambino = db.scalar(select(Bambino).where(Bambino.id == bambino_id))
+        if target_bambino:
+            iscritto_label = f"{target_bambino.cognome}-{target_bambino.nome}"
+
+    sede_label = "Tutte"
+    if sede_id:
+        sede_label = sedi_by_id.get(sede_id, str(sede_id))
+    elif len(sedi) == 1:
+        sede_label = sedi[0].nome
+
+    filename = f"{_safe_name_part(iscritto_label)}-{_safe_name_part(periodo)}-{_safe_name_part(sede_label)}.pdf"
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    y = height - 48
+
+    pdf.setFont("Helvetica-Bold", 14)
+    pdf.drawString(36, y, "Storico Presenze")
+    y -= 22
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(36, y, f"Periodo: {unita.strip().lower()} {periodo.strip()} (UTC)")
+    y -= 14
+    pdf.drawString(36, y, f"Sede: {sede_label}")
+    y -= 14
+    pdf.drawString(36, y, f"Iscritto: {iscritto_label}")
+    y -= 22
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(36, y, "Iscritto")
+    pdf.drawString(220, y, "Sede")
+    pdf.drawString(340, y, "Ingresso")
+    pdf.drawString(420, y, "Uscita")
+    pdf.drawString(490, y, "Totale")
+    y -= 14
+    pdf.setFont("Helvetica", 9)
+
+    for row in rows:
+        if y < 48:
+            pdf.showPage()
+            y = height - 48
+            pdf.setFont("Helvetica-Bold", 10)
+            pdf.drawString(36, y, "Iscritto")
+            pdf.drawString(220, y, "Sede")
+            pdf.drawString(340, y, "Ingresso")
+            pdf.drawString(420, y, "Uscita")
+            pdf.drawString(490, y, "Totale")
+            y -= 14
+            pdf.setFont("Helvetica", 9)
+
+        ingresso = row.ingresso.astimezone(timezone.utc).strftime("%H:%M") if row.ingresso else "-"
+        uscita = row.uscita.astimezone(timezone.utc).strftime("%H:%M") if row.uscita else "-"
+        total_seconds = max(0, int(row.tempo_totale_secondi))
+        h = total_seconds // 3600
+        m = (total_seconds % 3600) // 60
+        s = total_seconds % 60
+        total_label = f"{h:02d}:{m:02d}:{s:02d}"
+        pdf.drawString(36, y, f"{row.cognome} {row.nome}"[:34])
+        pdf.drawString(220, y, row.sede_nome[:20])
+        pdf.drawString(340, y, ingresso)
+        pdf.drawString(420, y, uscita)
+        pdf.drawString(490, y, total_label)
+        y -= 12
+
+    pdf.save()
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/audit")

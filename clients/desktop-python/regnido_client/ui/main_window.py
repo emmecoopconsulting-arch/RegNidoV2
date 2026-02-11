@@ -59,6 +59,9 @@ class MainWindow(QMainWindow):
         self.dashboard.refresh_iscritti_requested.connect(self._on_refresh_iscritti_requested)
         self.dashboard.create_iscritto_requested.connect(self._on_create_iscritto_requested)
         self.dashboard.delete_iscritto_requested.connect(self._on_delete_iscritto_requested)
+        self.dashboard.refresh_history_requested.connect(self._on_refresh_history_requested)
+        self.dashboard.export_history_requested.connect(self._on_export_history_requested)
+        self.dashboard.history_sede_changed.connect(self._on_history_sede_changed)
 
         self.sync_timer = QTimer(self)
         self.sync_timer.setInterval(30000)
@@ -351,6 +354,8 @@ class MainWindow(QMainWindow):
         groups = {str(group).lower() for group in profile.get("groups", [])}
         is_admin = "admin" in groups
         self.dashboard.set_admin_tabs_visible(is_admin)
+        self._load_history_filters()
+        self._on_refresh_history_requested(*self.dashboard.history_filters())
         if is_admin:
             self._on_refresh_users_requested()
             self._load_sedi_for_users()
@@ -432,6 +437,104 @@ class MainWindow(QMainWindow):
             self.dashboard.append_iscritti_status(f"Errore sedi iscritti: {exc.response.text}")
         except httpx.HTTPError as exc:
             self.dashboard.append_iscritti_status(f"Errore rete sedi iscritti: {exc}")
+
+    def _load_history_filters(self) -> None:
+        try:
+            sedi_rows = self.api.list_accessible_sedi()
+            sedi = [(str(row["id"]), str(row["nome"])) for row in sedi_rows]
+            self.dashboard.set_history_sedi(sedi)
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_history_status(f"Errore caricamento sedi storico: {exc.response.text}")
+            return
+        except httpx.HTTPError as exc:
+            self.dashboard.append_history_status(f"Errore rete sedi storico: {exc}")
+            return
+
+        try:
+            iscritti_rows = self.api.list_accessible_iscritti()
+            self.dashboard.set_history_iscritti(iscritti_rows)
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_history_status(f"Errore caricamento iscritti storico: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_history_status(f"Errore rete iscritti storico: {exc}")
+
+    def _on_history_sede_changed(self, sede_id: str) -> None:
+        try:
+            iscritti_rows = self.api.list_accessible_iscritti(sede_id=sede_id or None)
+            self.dashboard.set_history_iscritti(iscritti_rows)
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_history_status(f"Errore filtro iscritti storico: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_history_status(f"Errore rete filtro iscritti storico: {exc}")
+
+    def _on_refresh_history_requested(self, unita: str, periodo: str, sede_id: str, bambino_id: str) -> None:
+        try:
+            payload = self.api.list_presence_history(
+                unita=unita,
+                periodo=periodo,
+                sede_id=sede_id or None,
+                bambino_id=bambino_id or None,
+            )
+            rows = list(payload.get("rows", []))
+            self.dashboard.set_history_rows(rows)
+            self.dashboard.append_history_status(f"Storico caricato: {len(rows)} righe")
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_history_status(f"Errore caricamento storico: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_history_status(f"Errore rete storico: {exc}")
+
+    def _on_export_history_requested(self, unita: str, periodo: str, sede_id: str, bambino_id: str) -> None:
+        try:
+            pdf_bytes = self.api.export_presence_history_pdf(
+                unita=unita,
+                periodo=periodo,
+                sede_id=sede_id or None,
+                bambino_id=bambino_id or None,
+            )
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_history_status(f"Errore export PDF: {exc.response.text}")
+            return
+        except httpx.HTTPError as exc:
+            self.dashboard.append_history_status(f"Errore rete export PDF: {exc}")
+            return
+
+        filename = self._build_history_pdf_filename(periodo=periodo, sede_id=sede_id, bambino_id=bambino_id)
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salva export presenze",
+            str(Path.home() / filename),
+            "PDF (*.pdf)",
+        )
+        if not selected:
+            self.dashboard.append_history_status("Export annullato")
+            return
+
+        output_path = Path(selected)
+        if output_path.suffix.lower() != ".pdf":
+            output_path = output_path.with_suffix(".pdf")
+        output_path.write_bytes(pdf_bytes)
+        self.dashboard.append_history_status(f"Export PDF salvato: {output_path}")
+
+    def _build_history_pdf_filename(self, periodo: str, sede_id: str, bambino_id: str) -> str:
+        sede_label = "TutteSedi"
+        if sede_id:
+            idx = self.dashboard.history_sede_combo.findData(sede_id)
+            if idx >= 0:
+                sede_label = str(self.dashboard.history_sede_combo.itemText(idx).split(" (")[0])
+
+        iscritto_label = "Tutti"
+        if bambino_id:
+            idx = self.dashboard.history_iscritto_combo.findData(bambino_id)
+            if idx >= 0:
+                iscritto_label = str(self.dashboard.history_iscritto_combo.itemText(idx))
+
+        def sanitize(raw: str) -> str:
+            allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            normalized = "".join(ch if ch in allowed else "-" for ch in raw.strip())
+            compact = "-".join(part for part in normalized.split("-") if part)
+            return compact or "ND"
+
+        return f"{sanitize(iscritto_label)}-{sanitize(periodo)}-{sanitize(sede_label)}.pdf"
 
     def _on_refresh_iscritti_requested(self, sede_id: str, include_inactive: bool) -> None:
         try:
