@@ -36,6 +36,9 @@ class DashboardView(QWidget):
     refresh_iscritti_requested = Signal(str, bool)
     create_iscritto_requested = Signal(str, str, str, bool)
     delete_iscritto_requested = Signal(str)
+    refresh_sedi_requested = Signal()
+    create_sede_requested = Signal(str)
+    disable_sede_requested = Signal(str)
     refresh_history_requested = Signal(str, str, str, str)
     export_history_requested = Signal(str, str, str, str)
     history_sede_changed = Signal(str)
@@ -43,8 +46,11 @@ class DashboardView(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._presence_rows: dict[str, dict] = {}
+        self._presenze_tab_index = -1
+        self._storico_tab_index = -1
         self._user_tab_index = -1
         self._iscritti_tab_index = -1
+        self._sedi_tab_index = -1
 
         self.connection_label = QLabel("Stato rete: -")
         self.device_label = QLabel("Dispositivo: -")
@@ -201,6 +207,36 @@ class DashboardView(QWidget):
         iscritti_tab = QWidget()
         iscritti_tab.setLayout(iscritti_root)
 
+        self.sedi_list_widget = QListWidget()
+        self.sedi_nome_input = QLineEdit()
+        self.refresh_sedi_button = QPushButton("Aggiorna sedi")
+        self.create_sede_button = QPushButton("Crea sede")
+        self.disable_sede_button = QPushButton("Disattiva selezionata")
+        self.sedi_status = QTextEdit()
+        self.sedi_status.setReadOnly(True)
+        self.sedi_status.setMaximumHeight(160)
+
+        self.refresh_sedi_button.clicked.connect(self.refresh_sedi_requested)
+        self.create_sede_button.clicked.connect(lambda: self.create_sede_requested.emit(self.sedi_nome_input.text().strip()))
+        self.disable_sede_button.clicked.connect(self._emit_disable_sede)
+
+        sedi_actions = QHBoxLayout()
+        sedi_actions.addWidget(self.refresh_sedi_button)
+        sedi_actions.addStretch(1)
+        sedi_actions.addWidget(self.create_sede_button)
+        sedi_actions.addWidget(self.disable_sede_button)
+
+        sedi_form = QFormLayout()
+        sedi_form.addRow("Nome sede", self.sedi_nome_input)
+
+        sedi_root = QVBoxLayout()
+        sedi_root.addLayout(sedi_form)
+        sedi_root.addLayout(sedi_actions)
+        sedi_root.addWidget(self.sedi_list_widget)
+        sedi_root.addWidget(self.sedi_status)
+        sedi_tab = QWidget()
+        sedi_tab.setLayout(sedi_root)
+
         self.history_unit_combo = QComboBox()
         self.history_unit_combo.addItem("Giorno", "giorno")
         self.history_unit_combo.addItem("Mese", "mese")
@@ -253,12 +289,15 @@ class DashboardView(QWidget):
         history_tab.setLayout(history_root)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(presenze_tab, "Presenze")
-        self.tabs.addTab(history_tab, "Storico")
+        self._presenze_tab_index = self.tabs.addTab(presenze_tab, "Presenze")
+        self._storico_tab_index = self.tabs.addTab(history_tab, "Storico")
         self._user_tab_index = self.tabs.addTab(users_tab, "Gestione utenti")
         self._iscritti_tab_index = self.tabs.addTab(iscritti_tab, "Iscritti")
+        self._sedi_tab_index = self.tabs.addTab(sedi_tab, "Sedi")
         self.tabs.setTabVisible(self._user_tab_index, False)
         self.tabs.setTabVisible(self._iscritti_tab_index, False)
+        self.tabs.setTabVisible(self._sedi_tab_index, False)
+        self.tabs.tabBar().hide()
 
         root = QVBoxLayout()
         root.addWidget(self.tabs)
@@ -437,10 +476,33 @@ class DashboardView(QWidget):
         self.tabs.setTabVisible(self._user_tab_index, visible)
         if self._iscritti_tab_index >= 0:
             self.tabs.setTabVisible(self._iscritti_tab_index, visible)
+        if self._sedi_tab_index >= 0:
+            self.tabs.setTabVisible(self._sedi_tab_index, visible)
         if not visible and self.tabs.currentIndex() == self._user_tab_index:
-            self.tabs.setCurrentIndex(0)
+            self.tabs.setCurrentIndex(self._presenze_tab_index)
         if not visible and self.tabs.currentIndex() == self._iscritti_tab_index:
-            self.tabs.setCurrentIndex(0)
+            self.tabs.setCurrentIndex(self._presenze_tab_index)
+        if not visible and self.tabs.currentIndex() == self._sedi_tab_index:
+            self.tabs.setCurrentIndex(self._presenze_tab_index)
+
+    def go_to_section(self, section: str) -> None:
+        section_norm = section.strip().lower()
+        if section_norm == "presenze":
+            self.tabs.setCurrentIndex(self._presenze_tab_index)
+            return
+        if section_norm == "storico":
+            self.tabs.setCurrentIndex(self._storico_tab_index)
+            return
+        if section_norm == "utenti" and self.tabs.isTabVisible(self._user_tab_index):
+            self.tabs.setCurrentIndex(self._user_tab_index)
+            return
+        if section_norm == "iscritti" and self.tabs.isTabVisible(self._iscritti_tab_index):
+            self.tabs.setCurrentIndex(self._iscritti_tab_index)
+            return
+        if section_norm == "sedi" and self.tabs.isTabVisible(self._sedi_tab_index):
+            self.tabs.setCurrentIndex(self._sedi_tab_index)
+            return
+        self.tabs.setCurrentIndex(self._presenze_tab_index)
 
     def set_users(self, users: list[dict[str, str]]) -> None:
         self.users_list_widget.clear()
@@ -531,3 +593,26 @@ class DashboardView(QWidget):
             self.delete_iscritto_requested.emit("")
             return
         self.delete_iscritto_requested.emit(str(item.data(1)))
+
+    def set_sedi_admin(self, sedi_rows: list[dict[str, object]]) -> None:
+        self.sedi_list_widget.clear()
+        for row in sedi_rows:
+            sede_id = str(row.get("id", ""))
+            nome = str(row.get("nome", "-"))
+            stato = "attiva" if bool(row.get("attiva")) else "disattivata"
+            item = QListWidgetItem(f"{nome} | {stato}")
+            item.setData(1, sede_id)
+            self.sedi_list_widget.addItem(item)
+
+    def append_sedi_status(self, message: str) -> None:
+        self.sedi_status.append(message)
+
+    def clear_sede_form(self) -> None:
+        self.sedi_nome_input.clear()
+
+    def _emit_disable_sede(self) -> None:
+        item = self.sedi_list_widget.currentItem()
+        if not item:
+            self.disable_sede_requested.emit("")
+            return
+        self.disable_sede_requested.emit(str(item.data(1)))

@@ -176,6 +176,15 @@ class ApiClient:
         response.raise_for_status()
         return list(response.json())
 
+    def disable_sede_auth(self, sede_id: str) -> dict[str, Any]:
+        response = httpx.delete(
+            f"{self.base_url}/admin/sedi/{sede_id}",
+            headers=self._headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return dict(response.json())
+
     def create_bambino(self, sede_id: str, nome: str, cognome: str, admin_token: str, attivo: bool = True) -> dict[str, Any]:
         response = httpx.post(
             f"{self.base_url}/admin/bambini",

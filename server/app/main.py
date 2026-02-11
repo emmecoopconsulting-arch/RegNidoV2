@@ -546,6 +546,25 @@ def list_sedi(user: Utente = Depends(get_admin_user), db: Session = Depends(get_
     return [SedeOut(id=row.id, nome=row.nome, attiva=row.attiva) for row in rows]
 
 
+@app.delete("/admin/sedi/{sede_id}", response_model=SedeOut)
+def disable_sede(sede_id: uuid.UUID, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> SedeOut:
+    sede = db.scalar(select(Sede).where(Sede.id == sede_id))
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede non trovata")
+
+    sede.attiva = False
+    append_audit(
+        db,
+        azione="admin:disable_sede",
+        entita="sedi",
+        entita_id=str(sede.id),
+        esito="OK",
+        utente_id=user.id,
+    )
+    db.commit()
+    return SedeOut(id=sede.id, nome=sede.nome, attiva=sede.attiva)
+
+
 @app.get("/admin/users", response_model=list[UserOut])
 def list_users(user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> list[UserOut]:
     rows = db.scalars(select(Utente).join(Role).order_by(Utente.username.asc())).all()

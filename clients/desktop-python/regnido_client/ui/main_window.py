@@ -6,6 +6,7 @@ import platform
 
 import httpx
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QStackedWidget
 
 from regnido_client.config import DB_PATH, DEFAULT_API_BASE_URL
@@ -38,6 +39,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.login_view)
         self.stack.addWidget(self.dashboard)
         self.setCentralWidget(self.stack)
+        self._build_top_menu()
 
         self.setup_view.save_requested.connect(self._on_setup_save_requested)
         self.setup_view.test_requested.connect(self._on_setup_test_requested)
@@ -59,6 +61,9 @@ class MainWindow(QMainWindow):
         self.dashboard.refresh_iscritti_requested.connect(self._on_refresh_iscritti_requested)
         self.dashboard.create_iscritto_requested.connect(self._on_create_iscritto_requested)
         self.dashboard.delete_iscritto_requested.connect(self._on_delete_iscritto_requested)
+        self.dashboard.refresh_sedi_requested.connect(self._on_refresh_sedi_requested)
+        self.dashboard.create_sede_requested.connect(self._on_create_sede_requested)
+        self.dashboard.disable_sede_requested.connect(self._on_disable_sede_requested)
         self.dashboard.refresh_history_requested.connect(self._on_refresh_history_requested)
         self.dashboard.export_history_requested.connect(self._on_export_history_requested)
         self.dashboard.history_sede_changed.connect(self._on_history_sede_changed)
@@ -74,12 +79,14 @@ class MainWindow(QMainWindow):
             self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL),
         )
         self.login_view.key_file_input.setText(self.store.get_setting("key_file_path", ""))
+        self._set_navigation_actions(False, False)
 
         api_base_url = self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL)
         saved_token = self.store.get_setting("access_token", "")
         if not api_base_url:
             self.stack.setCurrentWidget(self.setup_view)
             self.setup_view.set_status("Inserisci URL backend per iniziare")
+            self._set_navigation_actions(False, False)
         elif saved_token:
             self.api.set_token(saved_token)
             if not self.api.token_still_valid():
@@ -88,14 +95,45 @@ class MainWindow(QMainWindow):
                 self.stack.setCurrentWidget(self.login_view)
                 self.login_view.set_status("Sessione scaduta. Esegui di nuovo il login.", is_error=True)
                 self._update_login_health()
+                self._set_navigation_actions(False, False)
             else:
                 self.stack.setCurrentWidget(self.dashboard)
                 self.sync_timer.start()
                 self.health_timer.start()
+                self._set_navigation_actions(True, False)
                 self._post_login_refresh()
         else:
             self.stack.setCurrentWidget(self.login_view)
             self._update_login_health()
+            self._set_navigation_actions(False, False)
+
+    def _build_top_menu(self) -> None:
+        sections_menu = self.menuBar().addMenu("Sezioni")
+        self.action_go_presenze = QAction("Presenze", self)
+        self.action_go_storico = QAction("Storico", self)
+        self.action_go_utenti = QAction("Utenti", self)
+        self.action_go_iscritti = QAction("Iscritti", self)
+        self.action_go_sedi = QAction("Sedi", self)
+
+        self.action_go_presenze.triggered.connect(lambda: self.dashboard.go_to_section("presenze"))
+        self.action_go_storico.triggered.connect(lambda: self.dashboard.go_to_section("storico"))
+        self.action_go_utenti.triggered.connect(lambda: self.dashboard.go_to_section("utenti"))
+        self.action_go_iscritti.triggered.connect(lambda: self.dashboard.go_to_section("iscritti"))
+        self.action_go_sedi.triggered.connect(lambda: self.dashboard.go_to_section("sedi"))
+
+        sections_menu.addAction(self.action_go_presenze)
+        sections_menu.addAction(self.action_go_storico)
+        sections_menu.addSeparator()
+        sections_menu.addAction(self.action_go_utenti)
+        sections_menu.addAction(self.action_go_iscritti)
+        sections_menu.addAction(self.action_go_sedi)
+
+    def _set_navigation_actions(self, logged_in: bool, is_admin: bool) -> None:
+        self.action_go_presenze.setEnabled(logged_in)
+        self.action_go_storico.setEnabled(logged_in)
+        self.action_go_utenti.setEnabled(logged_in and is_admin)
+        self.action_go_iscritti.setEnabled(logged_in and is_admin)
+        self.action_go_sedi.setEnabled(logged_in and is_admin)
 
     def _update_login_health(self) -> None:
         try:
@@ -146,6 +184,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.dashboard)
         self.sync_timer.start()
         self.health_timer.start()
+        self._set_navigation_actions(True, False)
+        self.dashboard.go_to_section("presenze")
         self._post_login_refresh()
 
     def _show_setup(self) -> None:
@@ -153,6 +193,7 @@ class MainWindow(QMainWindow):
             self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL),
         )
         self.stack.setCurrentWidget(self.setup_view)
+        self._set_navigation_actions(False, False)
 
     def _on_setup_test_requested(self, api_base_url: str) -> None:
         if not api_base_url:
@@ -324,6 +365,7 @@ class MainWindow(QMainWindow):
         self.dashboard.set_admin_tabs_visible(False)
         self.stack.setCurrentWidget(self.login_view)
         self.login_view.set_status("Logout eseguito")
+        self._set_navigation_actions(False, False)
         self._update_login_health()
 
     def _probe_connection_health(self) -> None:
@@ -354,12 +396,14 @@ class MainWindow(QMainWindow):
         groups = {str(group).lower() for group in profile.get("groups", [])}
         is_admin = "admin" in groups
         self.dashboard.set_admin_tabs_visible(is_admin)
+        self._set_navigation_actions(True, is_admin)
         self._load_history_filters()
         self._on_refresh_history_requested(*self.dashboard.history_filters())
         if is_admin:
             self._on_refresh_users_requested()
             self._load_sedi_for_users()
             self._load_sedi_for_iscritti()
+            self._on_refresh_sedi_requested()
             self._on_refresh_iscritti_requested("", False)
 
     def _on_refresh_users_requested(self) -> None:
@@ -421,7 +465,7 @@ class MainWindow(QMainWindow):
     def _load_sedi_for_users(self) -> None:
         try:
             rows = self.api.list_sedi_auth()
-            sedi = [(row["id"], row["nome"]) for row in rows]
+            sedi = [(row["id"], row["nome"]) for row in rows if bool(row.get("attiva", True))]
             self.dashboard.set_sedi_for_users(sedi)
         except httpx.HTTPStatusError as exc:
             self.dashboard.append_users_status(f"Errore sedi utenti: {exc.response.text}")
@@ -431,12 +475,54 @@ class MainWindow(QMainWindow):
     def _load_sedi_for_iscritti(self) -> None:
         try:
             rows = self.api.list_sedi_auth()
-            sedi = [(row["id"], row["nome"]) for row in rows]
+            sedi = [(row["id"], row["nome"]) for row in rows if bool(row.get("attiva", True))]
             self.dashboard.set_sedi_for_iscritti(sedi)
         except httpx.HTTPStatusError as exc:
             self.dashboard.append_iscritti_status(f"Errore sedi iscritti: {exc.response.text}")
         except httpx.HTTPError as exc:
             self.dashboard.append_iscritti_status(f"Errore rete sedi iscritti: {exc}")
+
+    def _on_refresh_sedi_requested(self) -> None:
+        try:
+            rows = self.api.list_sedi_auth()
+            self.dashboard.set_sedi_admin(rows)
+            self.dashboard.append_sedi_status(f"Sedi caricate: {len(rows)}")
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_sedi_status(f"Errore elenco sedi: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_sedi_status(f"Errore rete elenco sedi: {exc}")
+
+    def _on_create_sede_requested(self, nome: str) -> None:
+        nome_norm = nome.strip()
+        if not nome_norm:
+            self.dashboard.append_sedi_status("Nome sede obbligatorio")
+            return
+        try:
+            created = self.api.create_sede(nome=nome_norm, admin_token=self.api.token)
+            self.dashboard.append_sedi_status(f"Sede creata: {created.get('nome')}")
+            self.dashboard.clear_sede_form()
+            self._on_refresh_sedi_requested()
+            self._load_sedi_for_users()
+            self._load_sedi_for_iscritti()
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_sedi_status(f"Errore creazione sede: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_sedi_status(f"Errore rete creazione sede: {exc}")
+
+    def _on_disable_sede_requested(self, sede_id: str) -> None:
+        if not sede_id:
+            self.dashboard.append_sedi_status("Seleziona una sede da disattivare")
+            return
+        try:
+            disabled = self.api.disable_sede_auth(sede_id)
+            self.dashboard.append_sedi_status(f"Sede disattivata: {disabled.get('nome')}")
+            self._on_refresh_sedi_requested()
+            self._load_sedi_for_users()
+            self._load_sedi_for_iscritti()
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_sedi_status(f"Errore disattivazione sede: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_sedi_status(f"Errore rete disattivazione sede: {exc}")
 
     def _load_history_filters(self) -> None:
         try:

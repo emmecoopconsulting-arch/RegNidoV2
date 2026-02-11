@@ -81,6 +81,7 @@ curl http://localhost:8123/health
 - `GET /auth/me`
 - `POST /admin/sedi`
 - `GET /admin/sedi`
+- `DELETE /admin/sedi/{sede_id}`
 - `GET /admin/users`
 - `POST /admin/users`
 - `POST /admin/bambini`
