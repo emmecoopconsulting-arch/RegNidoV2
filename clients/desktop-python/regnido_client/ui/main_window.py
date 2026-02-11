@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import platform
 
 import httpx
 from PySide6.QtCore import QTimer
@@ -43,7 +44,6 @@ class MainWindow(QMainWindow):
         self.setup_view.admin_refresh_sedi_requested.connect(self._on_admin_refresh_sedi_requested)
         self.setup_view.admin_create_sede_requested.connect(self._on_admin_create_sede_requested)
         self.setup_view.admin_create_bambino_requested.connect(self._on_admin_create_bambino_requested)
-        self.setup_view.admin_create_device_requested.connect(self._on_admin_create_device_requested)
         self.login_view.login_requested.connect(self._on_login_requested)
         self.login_view.setup_requested.connect(self._show_setup)
         self.dashboard.search_requested.connect(self._on_search_requested)
@@ -68,11 +68,11 @@ class MainWindow(QMainWindow):
         )
         self.login_view.key_file_input.setText(self.store.get_setting("key_file_path", ""))
 
-        device_id = self.store.get_setting("device_id", "")
+        api_base_url = self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL)
         saved_token = self.store.get_setting("access_token", "")
-        if not device_id:
+        if not api_base_url:
             self.stack.setCurrentWidget(self.setup_view)
-            self.setup_view.set_status("Inserisci URL backend e activation code per iniziare")
+            self.setup_view.set_status("Inserisci URL backend per iniziare")
         elif saved_token:
             self.api.set_token(saved_token)
             if not self.api.token_still_valid():
@@ -133,6 +133,7 @@ class MainWindow(QMainWindow):
         self.store.set_setting("access_token", token)
         self.store.set_setting("username", username)
         self.store.set_setting("key_file_path", key_file_path)
+        self._ensure_device_registration()
         self.login_view.set_status("Login eseguito")
         self.stack.setCurrentWidget(self.dashboard)
         self.sync_timer.start()
@@ -258,28 +259,7 @@ class MainWindow(QMainWindow):
         except httpx.HTTPError as exc:
             self.setup_view.append_admin_output(f"Errore rete: {exc}")
 
-    def _on_admin_create_device_requested(self, sede_id: str, nome: str, expiry: int) -> None:
-        if not self.admin_token:
-            self.setup_view.set_admin_status("Esegui login admin prima", is_error=True)
-            return
-        if not sede_id or not nome:
-            self.setup_view.set_admin_status("Sede ID e nome dispositivo obbligatori", is_error=True)
-            return
-        try:
-            data = self.api.create_device(
-                sede_id=sede_id,
-                nome=nome,
-                activation_expires_minutes=expiry,
-                admin_token=self.admin_token,
-            )
-            self.setup_view.set_generated_activation_code(data["activation_code"])
-            self.setup_view.append_admin_output(json.dumps(data, indent=2, ensure_ascii=False))
-        except httpx.HTTPStatusError as exc:
-            self.setup_view.append_admin_output(f"Errore crea dispositivo: {exc.response.text}")
-        except httpx.HTTPError as exc:
-            self.setup_view.append_admin_output(f"Errore rete: {exc}")
-
-    def _on_setup_save_requested(self, api_base_url: str, activation_code: str) -> None:
+    def _on_setup_save_requested(self, api_base_url: str) -> None:
         if not api_base_url:
             self.setup_view.set_status("API Base URL obbligatorio", is_error=True)
             return
@@ -290,30 +270,35 @@ class MainWindow(QMainWindow):
         self.store.set_setting("api_base_url", api_base_url)
         self.api.set_base_url(api_base_url)
 
-        has_existing_device = bool(self.store.get_setting("device_id", ""))
-        if not activation_code and has_existing_device:
-            self.setup_view.set_status("Configurazione backend salvata")
-            self.stack.setCurrentWidget(self.login_view)
-            self._update_login_health()
-            return
-        if not activation_code:
-            self.setup_view.set_status("Activation Code obbligatorio al primo avvio", is_error=True)
-            return
-
-        try:
-            claim = self.api.claim_device(activation_code)
-            self.store.set_setting("device_id", claim["device_id"])
-            self.setup_view.set_status(f"Dispositivo attivato: {claim['nome']} ({claim['sede_nome']})")
-        except httpx.HTTPStatusError as exc:
-            self.setup_view.set_status(f"Attivazione fallita: {exc.response.text}", is_error=True)
-            return
-        except httpx.HTTPError as exc:
-            self.setup_view.set_status(f"Errore rete durante attivazione: {exc}", is_error=True)
-            return
-
         self.setup_view.set_status("Configurazione salvata")
         self.stack.setCurrentWidget(self.login_view)
         self._update_login_health()
+
+    def _ensure_device_registration(self) -> None:
+        existing_device_id = self.store.get_setting("device_id", "")
+        if existing_device_id:
+            return
+
+        try:
+            profile = self.api.auth_me()
+        except httpx.HTTPError:
+            return
+
+        groups = {str(group).lower() for group in profile.get("groups", [])}
+        if "admin" in groups:
+            return
+
+        client_id = self.store.get_setting("client_installation_id", "")
+        if not client_id:
+            client_id = str(uuid.uuid4())
+            self.store.set_setting("client_installation_id", client_id)
+
+        device_name = platform.node().strip() or "Desktop"
+        try:
+            registered = self.api.register_device(client_id=client_id, nome=device_name)
+            self.store.set_setting("device_id", str(registered.get("device_id", "")))
+        except httpx.HTTPError:
+            return
 
     def _post_login_refresh(self) -> None:
         self._refresh_user_capabilities()
@@ -479,13 +464,15 @@ class MainWindow(QMainWindow):
             return
 
         api_base_url, device_id = dialog.values()
-        if not api_base_url or not device_id:
-            self._show_error("API Base URL e Device ID sono obbligatori")
+        if not api_base_url:
+            self._show_error("API Base URL obbligatorio")
             return
 
         self.store.set_setting("api_base_url", api_base_url)
         self.store.set_setting("device_id", device_id)
         self.api.set_base_url(api_base_url)
+        if not device_id:
+            self._ensure_device_registration()
         self._refresh_device()
         self._on_search_requested(self.dashboard.search_input.text().strip())
 

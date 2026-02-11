@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -17,14 +16,13 @@ from PySide6.QtWidgets import (
 
 
 class SetupView(QWidget):
-    save_requested = Signal(str, str)
+    save_requested = Signal(str)
     test_requested = Signal(str)
 
     admin_login_requested = Signal(str, str, str, str)
     admin_refresh_sedi_requested = Signal()
     admin_create_sede_requested = Signal(str)
     admin_create_bambino_requested = Signal(str, str, str, bool)
-    admin_create_device_requested = Signal(str, str, int)
 
     def __init__(self) -> None:
         super().__init__()
@@ -32,11 +30,9 @@ class SetupView(QWidget):
         self.status_label = QLabel("")
         self.api_input = QLineEdit()
         self.api_input.setPlaceholderText("http://localhost:8123")
-        self.activation_input = QLineEdit()
-        self.activation_input.setPlaceholderText("ABCD-EFGH")
 
         self.test_button = QPushButton("Test connessione")
-        self.save_button = QPushButton("Attiva dispositivo e continua")
+        self.save_button = QPushButton("Salva backend e continua")
 
         self.admin_username_input = QLineEdit("admin")
         self.admin_key_file_input = QLineEdit()
@@ -60,15 +56,6 @@ class SetupView(QWidget):
         self.bambino_attivo_checkbox.setChecked(True)
         self.create_bambino_button = QPushButton("Crea bambino")
 
-        self.device_sede_combo = QComboBox()
-        self.device_nome_input = QLineEdit()
-        self.device_expiry_input = QSpinBox()
-        self.device_expiry_input.setMinimum(1)
-        self.device_expiry_input.setMaximum(1440)
-        self.device_expiry_input.setValue(15)
-        self.create_device_button = QPushButton("Crea dispositivo")
-        self.generated_activation_label = QLabel("-")
-
         self.admin_output = QTextEdit()
         self.admin_output.setReadOnly(True)
 
@@ -78,7 +65,6 @@ class SetupView(QWidget):
         self.refresh_sedi_button.clicked.connect(self.admin_refresh_sedi_requested)
         self.create_sede_button.clicked.connect(self._emit_admin_create_sede)
         self.create_bambino_button.clicked.connect(self._emit_admin_create_bambino)
-        self.create_device_button.clicked.connect(self._emit_admin_create_device)
 
         root = QVBoxLayout()
         root.addWidget(self._build_operator_group())
@@ -92,7 +78,6 @@ class SetupView(QWidget):
         group = QGroupBox("Configurazione iniziale backend")
         form = QFormLayout()
         form.addRow("API Base URL", self.api_input)
-        form.addRow("Activation Code", self.activation_input)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.test_button)
@@ -135,16 +120,9 @@ class SetupView(QWidget):
         bambino_form.addRow("Cognome", self.bambino_cognome_input)
         bambino_form.addRow("Stato", self.bambino_attivo_checkbox)
 
-        device_form = QFormLayout()
-        device_form.addRow("Sede", self.device_sede_combo)
-        device_form.addRow("Nome dispositivo", self.device_nome_input)
-        device_form.addRow("Scadenza code (min)", self.device_expiry_input)
-        device_form.addRow("Activation code", self.generated_activation_label)
-
         actions = QHBoxLayout()
         actions.addWidget(self.create_sede_button)
         actions.addWidget(self.create_bambino_button)
-        actions.addWidget(self.create_device_button)
         actions.addStretch(1)
 
         wrap = QVBoxLayout()
@@ -152,22 +130,19 @@ class SetupView(QWidget):
         wrap.addLayout(auth_row)
         wrap.addLayout(sede_form)
         wrap.addLayout(bambino_form)
-        wrap.addLayout(device_form)
         wrap.addLayout(actions)
         wrap.addWidget(self.admin_output)
 
         group.setLayout(wrap)
         return group
 
-    def set_values(self, api_base_url: str, activation_code: str = "") -> None:
+    def set_values(self, api_base_url: str) -> None:
         self.api_input.setText(api_base_url)
-        self.activation_input.setText(activation_code)
 
     def set_admin_enabled(self, enabled: bool) -> None:
         self.refresh_sedi_button.setEnabled(enabled)
         self.create_sede_button.setEnabled(enabled)
         self.create_bambino_button.setEnabled(enabled)
-        self.create_device_button.setEnabled(enabled)
 
     def set_admin_status(self, message: str, is_error: bool = False) -> None:
         color = "#b00020" if is_error else "#1e6a2f"
@@ -178,31 +153,22 @@ class SetupView(QWidget):
         self.admin_output.append(text)
         self.admin_output.append("-" * 45)
 
-    def set_generated_activation_code(self, code: str) -> None:
-        self.generated_activation_label.setText(code)
-        self.activation_input.setText(code)
-
     def set_sedi(self, sedi: list[tuple[str, str]]) -> None:
         self.bambino_sede_combo.clear()
-        self.device_sede_combo.clear()
         for sede_id, sede_nome in sedi:
             label = f"{sede_nome} ({sede_id[:8]})"
             self.bambino_sede_combo.addItem(label, sede_id)
-            self.device_sede_combo.addItem(label, sede_id)
 
     def select_sede(self, sede_id: str) -> None:
         idx_b = self.bambino_sede_combo.findData(sede_id)
         if idx_b >= 0:
             self.bambino_sede_combo.setCurrentIndex(idx_b)
-        idx_d = self.device_sede_combo.findData(sede_id)
-        if idx_d >= 0:
-            self.device_sede_combo.setCurrentIndex(idx_d)
 
     def _emit_test(self) -> None:
         self.test_requested.emit(self.api_input.text().strip())
 
     def _emit_save(self) -> None:
-        self.save_requested.emit(self.api_input.text().strip(), self.activation_input.text().strip())
+        self.save_requested.emit(self.api_input.text().strip())
 
     def _emit_admin_login(self) -> None:
         self.admin_login_requested.emit(
@@ -232,14 +198,6 @@ class SetupView(QWidget):
             self.bambino_nome_input.text().strip(),
             self.bambino_cognome_input.text().strip(),
             self.bambino_attivo_checkbox.isChecked(),
-        )
-
-    def _emit_admin_create_device(self) -> None:
-        sede_id = self.device_sede_combo.currentData()
-        self.admin_create_device_requested.emit(
-            str(sede_id) if sede_id else "",
-            self.device_nome_input.text().strip(),
-            int(self.device_expiry_input.value()),
         )
 
     def set_status(self, message: str, is_error: bool = False) -> None:

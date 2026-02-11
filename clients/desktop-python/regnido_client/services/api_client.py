@@ -114,6 +114,19 @@ class ApiClient:
         response.raise_for_status()
         return response.json()
 
+    def register_device(self, client_id: str, nome: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"client_id": client_id}
+        if nome:
+            payload["nome"] = nome
+        response = httpx.post(
+            f"{self.base_url}/devices/register",
+            headers=self._headers(),
+            json=payload,
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return dict(response.json())
+
     def create_sede(self, nome: str, admin_token: str) -> dict[str, Any]:
         response = httpx.post(
             f"{self.base_url}/admin/sedi",

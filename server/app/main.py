@@ -54,6 +54,8 @@ from app.schemas import (
     DeviceCreateIn,
     DeviceProfileOut,
     DeviceProvisionOut,
+    DeviceRegisterIn,
+    DeviceRegisterOut,
     HealthOut,
     LoginIn,
     LoginOut,
@@ -789,6 +791,72 @@ def claim_device(payload: DeviceClaimIn, request: Request, db: Session = Depends
         nome=device.nome,
         sede_id=sede.id,
         sede_nome=sede.nome,
+    )
+
+
+@app.post("/devices/register", response_model=DeviceRegisterOut)
+def register_device(payload: DeviceRegisterIn, user: Utente = Depends(get_current_user), db: Session = Depends(get_db)) -> DeviceRegisterOut:
+    if not user.sede_id:
+        raise HTTPException(status_code=400, detail="Utente non associato a una sede")
+
+    sede = db.scalar(select(Sede).where(Sede.id == user.sede_id, Sede.attiva.is_(True)))
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede utente non trovata o disattivata")
+
+    client_id = payload.client_id.strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id obbligatorio")
+
+    device_name = (payload.nome or "").strip()
+    if not device_name:
+        device_name = f"Desktop-{client_id[:8]}"
+    stable_name = f"{device_name} [{client_id[:8]}]"
+
+    existing = db.scalar(
+        select(Dispositivo).where(
+            Dispositivo.sede_id == user.sede_id,
+            Dispositivo.nome == stable_name,
+            Dispositivo.attivo.is_(True),
+        )
+    )
+    if existing:
+        append_audit(
+            db,
+            azione="device:register",
+            entita="dispositivi",
+            entita_id=str(existing.id),
+            esito="OK",
+            utente_id=user.id,
+            dettagli={"existing": True, "client_id": client_id},
+        )
+        db.commit()
+        return DeviceRegisterOut(
+            device_id=existing.id,
+            nome=existing.nome,
+            sede_id=sede.id,
+            sede_nome=sede.nome,
+            existing=True,
+        )
+
+    new_device = Dispositivo(nome=stable_name, sede_id=user.sede_id, attivo=True)
+    db.add(new_device)
+    db.flush()
+    append_audit(
+        db,
+        azione="device:register",
+        entita="dispositivi",
+        entita_id=str(new_device.id),
+        esito="OK",
+        utente_id=user.id,
+        dettagli={"existing": False, "client_id": client_id},
+    )
+    db.commit()
+    return DeviceRegisterOut(
+        device_id=new_device.id,
+        nome=new_device.nome,
+        sede_id=sede.id,
+        sede_nome=sede.nome,
+        existing=False,
     )
 
 

@@ -49,10 +49,11 @@ python main.py
    - login admin
    - crea sede
    - crea bambini
-   - crea dispositivo e ottieni `Activation Code`
 3. Inserisci `API Base URL` (es: `http://localhost:8123`)
-4. Inserisci `Activation Code`
-5. Clicca `Salva e continua`, poi esegui login
+4. Clicca `Salva e continua`, poi esegui login con file chiave
+
+Nota dispositivo:
+- non serve piu `Activation Code`; dopo il login il client registra automaticamente il dispositivo per la sede dell'utente.
 
 Nota clock/fuso:
 - Se l'orologio locale e quello server differiscono di oltre 5 minuti, l'app mostra warning.
@@ -60,8 +61,9 @@ Nota clock/fuso:
 
 ## Endpoint server usati dal client
 - `GET /health`
-- `POST /devices/claim`
-- `POST /auth/login`
+- `POST /devices/register`
+- `POST /auth/challenge`
+- `POST /auth/challenge/complete`
 - `GET /admin/sedi`
 - `GET /devices/{device_id}`
 - `GET /catalog/bambini?dispositivo_id=...`

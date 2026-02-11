@@ -145,6 +145,19 @@ class DeviceClaimOut(BaseModel):
     sede_nome: str
 
 
+class DeviceRegisterIn(BaseModel):
+    client_id: str
+    nome: str | None = None
+
+
+class DeviceRegisterOut(BaseModel):
+    device_id: uuid.UUID
+    nome: str
+    sede_id: uuid.UUID
+    sede_nome: str
+    existing: bool
+
+
 class UserCreateIn(BaseModel):
     username: str
     role: UserRole = UserRole.EDUCATORE
