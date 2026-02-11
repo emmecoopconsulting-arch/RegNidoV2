@@ -1,13 +1,15 @@
 import uuid
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 
 import httpx
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QStackedWidget
+from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QStackedWidget
 
 from regnido_client.config import DB_PATH, DEFAULT_API_BASE_URL
 from regnido_client.services.api_client import ApiClient
+from regnido_client.services.key_auth import read_key_file, sign_challenge
 from regnido_client.storage.local_store import LocalStore
 from regnido_client.ui.dashboard_view import DashboardView
 from regnido_client.ui.login_view import LoginView
@@ -64,6 +66,7 @@ class MainWindow(QMainWindow):
         self.setup_view.set_values(
             self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL),
         )
+        self.login_view.key_file_input.setText(self.store.get_setting("key_file_path", ""))
 
         device_id = self.store.get_setting("device_id", "")
         saved_token = self.store.get_setting("access_token", "")
@@ -102,16 +105,26 @@ class MainWindow(QMainWindow):
             return
         self.login_view.set_status("Backend raggiungibile")
 
-    def _on_login_requested(self, username: str, password: str) -> None:
-        if not username or not password:
-            self.login_view.set_status("Inserisci username e password", is_error=True)
+    def _on_login_requested(self, username: str, key_file_path: str, passphrase: str) -> None:
+        if not username or not key_file_path or not passphrase:
+            self.login_view.set_status("Inserisci username, file chiave e passphrase", is_error=True)
             return
 
         try:
-            token = self.api.login(username, password)
+            key_payload = read_key_file(key_file_path)
+            challenge = self.api.auth_challenge(username)
+            key_id, signature_b64 = sign_challenge(key_payload, passphrase, str(challenge["challenge"]))
+            token = self.api.auth_challenge_complete(
+                challenge_id=str(challenge["challenge_id"]),
+                key_id=key_id,
+                signature_b64=signature_b64,
+            )
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
             self.login_view.set_status(f"Login fallito: {detail}", is_error=True)
+            return
+        except ValueError as exc:
+            self.login_view.set_status(f"File chiave non valido: {exc}", is_error=True)
             return
         except httpx.HTTPError as exc:
             self.login_view.set_status(f"Errore di rete: {exc}", is_error=True)
@@ -119,6 +132,7 @@ class MainWindow(QMainWindow):
 
         self.store.set_setting("access_token", token)
         self.store.set_setting("username", username)
+        self.store.set_setting("key_file_path", key_file_path)
         self.login_view.set_status("Login eseguito")
         self.stack.setCurrentWidget(self.dashboard)
         self.sync_timer.start()
@@ -154,9 +168,9 @@ class MainWindow(QMainWindow):
             return
         self.setup_view.set_status("Backend non raggiungibile", is_error=True)
 
-    def _on_admin_login_requested(self, api_base_url: str, username: str, password: str) -> None:
-        if not api_base_url or not username or not password:
-            self.setup_view.set_admin_status("Inserisci URL, username e password", is_error=True)
+    def _on_admin_login_requested(self, api_base_url: str, username: str, key_file_path: str, passphrase: str) -> None:
+        if not api_base_url or not username or not key_file_path or not passphrase:
+            self.setup_view.set_admin_status("Inserisci URL, username, file chiave e passphrase", is_error=True)
             return
         if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
             self.setup_view.set_admin_status("API Base URL non valido", is_error=True)
@@ -165,11 +179,22 @@ class MainWindow(QMainWindow):
         self.store.set_setting("api_base_url", api_base_url)
         self.api.set_base_url(api_base_url)
         try:
-            self.admin_token = self.api.login_no_store(username, password)
+            key_payload = read_key_file(key_file_path)
+            challenge = self.api.auth_challenge(username)
+            key_id, signature_b64 = sign_challenge(key_payload, passphrase, str(challenge["challenge"]))
+            self.admin_token = self.api.auth_challenge_complete(
+                challenge_id=str(challenge["challenge_id"]),
+                key_id=key_id,
+                signature_b64=signature_b64,
+            )
             self.setup_view.set_admin_enabled(True)
             self.setup_view.set_admin_status(f"Admin autenticato: {username}")
             self.setup_view.append_admin_output("Login admin OK")
             self._on_admin_refresh_sedi_requested()
+        except ValueError as exc:
+            self.setup_view.set_admin_enabled(False)
+            self.setup_view.set_admin_status("File chiave non valido", is_error=True)
+            self.setup_view.append_admin_output(f"Errore file chiave: {exc}")
         except httpx.HTTPStatusError as exc:
             self.setup_view.set_admin_enabled(False)
             self.setup_view.set_admin_status("Login admin fallito", is_error=True)
@@ -317,6 +342,7 @@ class MainWindow(QMainWindow):
         self.dashboard.set_admin_tabs_visible(is_admin)
         if is_admin:
             self._on_refresh_users_requested()
+            self._load_sedi_for_users()
             self._load_sedi_for_iscritti()
             self._on_refresh_iscritti_requested("", False)
 
@@ -330,13 +356,42 @@ class MainWindow(QMainWindow):
         except httpx.HTTPError as exc:
             self.dashboard.append_users_status(f"Errore rete elenco utenti: {exc}")
 
-    def _on_create_user_requested(self, username: str, password: str, role: str, attivo: bool) -> None:
-        if not username or not password:
-            self.dashboard.append_users_status("Username e password obbligatori")
+    def _on_create_user_requested(
+        self,
+        username: str,
+        role: str,
+        attivo: bool,
+        sede_id: str,
+        key_name: str,
+        key_passphrase: str,
+        key_valid_days: int,
+    ) -> None:
+        if not username or not key_passphrase:
+            self.dashboard.append_users_status("Username e passphrase chiave obbligatori")
             return
 
         try:
-            created = self.api.create_user(username=username, password=password, role=role, attivo=attivo)
+            created = self.api.create_user(
+                username=username,
+                role=role,
+                attivo=attivo,
+                sede_id=sede_id or None,
+                key_name=key_name or "default",
+                key_passphrase=key_passphrase,
+                key_valid_days=key_valid_days,
+            )
+            default_name = str(created.get("key_file_name") or f"{username}.rnk")
+            selected, _ = QFileDialog.getSaveFileName(
+                self,
+                "Salva file chiave utente",
+                str(Path.home() / default_name),
+                "RegNido Key (*.rnk);;Tutti i file (*)",
+            )
+            if selected:
+                Path(selected).write_text(str(created.get("key_file_payload", "")), encoding="utf-8")
+                self.dashboard.append_users_status(f"File chiave salvato: {selected}")
+            else:
+                self.dashboard.append_users_status("Utente creato, ma file chiave non salvato")
             self.dashboard.append_users_status(
                 f"Utente creato: {created.get('username')} ({created.get('role')})"
             )
@@ -346,6 +401,16 @@ class MainWindow(QMainWindow):
             self.dashboard.append_users_status(f"Errore creazione utente: {exc.response.text}")
         except httpx.HTTPError as exc:
             self.dashboard.append_users_status(f"Errore rete creazione utente: {exc}")
+
+    def _load_sedi_for_users(self) -> None:
+        try:
+            rows = self.api.list_sedi_auth()
+            sedi = [(row["id"], row["nome"]) for row in rows]
+            self.dashboard.set_sedi_for_users(sedi)
+        except httpx.HTTPStatusError as exc:
+            self.dashboard.append_users_status(f"Errore sedi utenti: {exc.response.text}")
+        except httpx.HTTPError as exc:
+            self.dashboard.append_users_status(f"Errore rete sedi utenti: {exc}")
 
     def _load_sedi_for_iscritti(self) -> None:
         try:

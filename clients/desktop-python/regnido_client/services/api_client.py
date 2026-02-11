@@ -67,6 +67,26 @@ class ApiClient:
         self.set_token(token)
         return token
 
+    def auth_challenge(self, username: str) -> dict[str, Any]:
+        response = httpx.post(
+            f"{self.base_url}/auth/challenge",
+            json={"username": username},
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        return dict(response.json())
+
+    def auth_challenge_complete(self, challenge_id: str, key_id: str, signature_b64: str) -> str:
+        response = httpx.post(
+            f"{self.base_url}/auth/challenge/complete",
+            json={"challenge_id": challenge_id, "key_id": key_id, "signature_b64": signature_b64},
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        token = response.json()["access_token"]
+        self.set_token(token)
+        return token
+
     def login_no_store(self, username: str, password: str) -> str:
         response = httpx.post(
             f"{self.base_url}/auth/login",
@@ -198,15 +218,27 @@ class ApiClient:
         response.raise_for_status()
         return list(response.json())
 
-    def create_user(self, username: str, password: str, role: str = "EDUCATORE", attivo: bool = True) -> dict[str, Any]:
+    def create_user(
+        self,
+        username: str,
+        role: str = "EDUCATORE",
+        attivo: bool = True,
+        sede_id: str | None = None,
+        key_name: str = "default",
+        key_passphrase: str = "",
+        key_valid_days: int = 180,
+    ) -> dict[str, Any]:
         response = httpx.post(
             f"{self.base_url}/admin/users",
             headers=self._headers(),
             json={
                 "username": username,
-                "password": password,
                 "role": role,
                 "attivo": attivo,
+                "sede_id": sede_id,
+                "key_name": key_name,
+                "key_passphrase": key_passphrase,
+                "key_valid_days": key_valid_days,
             },
             timeout=8.0,
         )

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -30,7 +31,7 @@ class DashboardView(QWidget):
     refresh_device_requested = Signal()
     logout_requested = Signal()
     refresh_users_requested = Signal()
-    create_user_requested = Signal(str, str, str, bool)
+    create_user_requested = Signal(str, str, bool, str, str, str, int)
     refresh_iscritti_requested = Signal(str, bool)
     create_iscritto_requested = Signal(str, str, str, bool)
     delete_iscritto_requested = Signal(str)
@@ -95,11 +96,17 @@ class DashboardView(QWidget):
 
         self.users_list_widget = QListWidget()
         self.user_username_input = QLineEdit()
-        self.user_password_input = QLineEdit()
-        self.user_password_input.setEchoMode(QLineEdit.Password)
+        self.user_sede_combo = QComboBox()
         self.user_role_combo = QComboBox()
         self.user_role_combo.addItem("Educatore", "EDUCATORE")
         self.user_role_combo.addItem("Amministratore", "AMM_CENTRALE")
+        self.user_key_name_input = QLineEdit("default")
+        self.user_key_passphrase_input = QLineEdit()
+        self.user_key_passphrase_input.setEchoMode(QLineEdit.Password)
+        self.user_key_days_input = QSpinBox()
+        self.user_key_days_input.setMinimum(1)
+        self.user_key_days_input.setMaximum(3650)
+        self.user_key_days_input.setValue(180)
         self.user_active_checkbox = QCheckBox("Attivo")
         self.user_active_checkbox.setChecked(True)
         self.create_user_button = QPushButton("Crea utente")
@@ -113,8 +120,11 @@ class DashboardView(QWidget):
 
         user_form = QFormLayout()
         user_form.addRow("Username", self.user_username_input)
-        user_form.addRow("Password", self.user_password_input)
+        user_form.addRow("Sede", self.user_sede_combo)
         user_form.addRow("Ruolo", self.user_role_combo)
+        user_form.addRow("Nome chiave", self.user_key_name_input)
+        user_form.addRow("Passphrase chiave", self.user_key_passphrase_input)
+        user_form.addRow("Scadenza chiave (giorni)", self.user_key_days_input)
         user_form.addRow("Stato", self.user_active_checkbox)
 
         user_actions = QHBoxLayout()
@@ -302,7 +312,9 @@ class DashboardView(QWidget):
             groups = ", ".join(user.get("groups", []))
             stato = "attivo" if user.get("attivo") else "disattivo"
             role = user.get("role", "-")
-            label = f"{user.get('username', '-')}: {role} | {groups} | {stato}"
+            sede_id = str(user.get("sede_id") or "")
+            sede_label = sede_id[:8] if sede_id else "nessuna sede"
+            label = f"{user.get('username', '-')}: {role} | {groups} | {sede_label} | {stato}"
             item = QListWidgetItem(label)
             item.setData(1, user.get("id", ""))
             self.users_list_widget.addItem(item)
@@ -312,17 +324,29 @@ class DashboardView(QWidget):
 
     def clear_user_form(self) -> None:
         self.user_username_input.clear()
-        self.user_password_input.clear()
+        self.user_key_passphrase_input.clear()
         self.user_role_combo.setCurrentIndex(0)
+        self.user_key_name_input.setText("default")
+        self.user_key_days_input.setValue(180)
         self.user_active_checkbox.setChecked(True)
 
     def _emit_create_user(self) -> None:
+        sede_id = str(self.user_sede_combo.currentData() or "")
         self.create_user_requested.emit(
             self.user_username_input.text().strip(),
-            self.user_password_input.text(),
             str(self.user_role_combo.currentData()),
             self.user_active_checkbox.isChecked(),
+            sede_id or "",
+            self.user_key_name_input.text().strip(),
+            self.user_key_passphrase_input.text(),
+            int(self.user_key_days_input.value()),
         )
+
+    def set_sedi_for_users(self, sedi: list[tuple[str, str]]) -> None:
+        self.user_sede_combo.clear()
+        self.user_sede_combo.addItem("Nessuna sede (admin centrale)", "")
+        for sede_id, sede_nome in sedi:
+            self.user_sede_combo.addItem(f"{sede_nome} ({sede_id[:8]})", sede_id)
 
     def set_sedi_for_iscritti(self, sedi: list[tuple[str, str]]) -> None:
         self.iscritti_sede_filter_combo.clear()

@@ -17,7 +17,16 @@ from app.crud import (
     seed_roles_permissions,
 )
 from app.db import Base, SessionLocal, engine, get_db
+from app.key_auth import (
+    build_key_file_payload,
+    encrypt_private_key_pem,
+    generate_ed25519_keypair,
+    new_challenge,
+    valid_until,
+    verify_signature,
+)
 from app.models import (
+    AuthChallenge,
     AuditLog,
     Bambino,
     DeviceActivation,
@@ -26,10 +35,16 @@ from app.models import (
     Presenza,
     Role,
     Sede,
+    UserKey,
+    UserKeyStatus,
     UserRole,
     Utente,
 )
 from app.schemas import (
+    AuthChallengeCompleteIn,
+    AuthChallengeIn,
+    AuthChallengeOut,
+    AuthBootstrapKeyIn,
     AuthMeOut,
     BambinoCreateIn,
     BambinoPresenceStateOut,
@@ -49,6 +64,11 @@ from app.schemas import (
     SyncIn,
     SyncOut,
     UserCreateIn,
+    UserCreateOut,
+    UserKeyIssueIn,
+    UserKeyIssueOut,
+    UserKeyOut,
+    UserKeyRevokeIn,
     UserOut,
 )
 from app.security import create_access_token, hash_password, verify_password
@@ -151,6 +171,169 @@ def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)) -> 
     return LoginOut(access_token=token)
 
 
+@app.post("/auth/bootstrap-key", response_model=UserKeyIssueOut)
+def bootstrap_key(payload: AuthBootstrapKeyIn, request: Request, db: Session = Depends(get_db)) -> UserKeyIssueOut:
+    user = authenticate_user(db, payload.username, payload.password)
+    now = datetime.now(timezone.utc)
+    active_key = db.scalar(
+        select(UserKey.id).where(
+            UserKey.utente_id == user.id,
+            UserKey.status == UserKeyStatus.ACTIVE,
+            ((UserKey.valid_to.is_(None)) | (UserKey.valid_to > now)),
+        )
+    )
+    if active_key:
+        raise HTTPException(status_code=409, detail="Utente ha gia una chiave attiva")
+
+    private_key_pem, public_key_pem, fingerprint = generate_ed25519_keypair()
+    key_valid_to = valid_until(payload.key_valid_days)
+    encrypted_private_key_pem = encrypt_private_key_pem(private_key_pem, payload.key_passphrase.strip())
+
+    user_key = UserKey(
+        utente_id=user.id,
+        nome=payload.key_name.strip() or "bootstrap",
+        public_key_pem=public_key_pem,
+        fingerprint=fingerprint,
+        status=UserKeyStatus.ACTIVE,
+        valid_to=key_valid_to,
+        created_by=user.id,
+    )
+    db.add(user_key)
+    append_audit(
+        db,
+        azione="auth:bootstrap_key",
+        entita="user_keys",
+        entita_id=str(user_key.id),
+        esito="OK",
+        utente_id=user.id,
+        ip=request.client.host if request.client else None,
+    )
+    db.commit()
+
+    return UserKeyIssueOut(
+        key_id=user_key.id,
+        key_fingerprint=fingerprint,
+        key_expires_at=key_valid_to,
+        key_file_name=f"{user.username}-{str(user_key.id)[:8]}.rnk",
+        key_file_payload=build_key_file_payload(
+            key_id=user_key.id,
+            username=user.username,
+            role=user.ruolo.code.value,
+            sede_id=user.sede_id,
+            fingerprint=fingerprint,
+            encrypted_private_key_pem=encrypted_private_key_pem,
+            valid_to=key_valid_to,
+        ),
+    )
+
+
+@app.post("/auth/challenge", response_model=AuthChallengeOut)
+def auth_challenge(payload: AuthChallengeIn, request: Request, db: Session = Depends(get_db)) -> AuthChallengeOut:
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username obbligatorio")
+
+    user = db.scalar(select(Utente).where(Utente.username == username, Utente.attivo.is_(True)))
+    if not user:
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+
+    now = datetime.now(timezone.utc)
+    active_key = db.scalar(
+        select(UserKey.id).where(
+            UserKey.utente_id == user.id,
+            UserKey.status == UserKeyStatus.ACTIVE,
+            ((UserKey.valid_to.is_(None)) | (UserKey.valid_to > now)),
+        )
+    )
+    if not active_key:
+        raise HTTPException(status_code=401, detail="Nessuna chiave attiva per questo utente")
+
+    challenge = AuthChallenge(
+        utente_id=user.id,
+        challenge=new_challenge(),
+        expires_at=now + timedelta(minutes=2),
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("User-Agent", "")[:255],
+    )
+    db.add(challenge)
+    db.flush()
+    append_audit(
+        db,
+        azione="auth:challenge",
+        entita="utenti",
+        entita_id=str(user.id),
+        esito="OK",
+        utente_id=user.id,
+        ip=request.client.host if request.client else None,
+    )
+    db.commit()
+    return AuthChallengeOut(challenge_id=challenge.id, challenge=challenge.challenge, expires_at=challenge.expires_at)
+
+
+@app.post("/auth/challenge/complete", response_model=LoginOut)
+def auth_challenge_complete(payload: AuthChallengeCompleteIn, request: Request, db: Session = Depends(get_db)) -> LoginOut:
+    now = datetime.now(timezone.utc)
+    challenge = db.scalar(
+        select(AuthChallenge).where(
+            AuthChallenge.id == payload.challenge_id,
+            AuthChallenge.used_at.is_(None),
+            AuthChallenge.expires_at > now,
+        )
+    )
+    if not challenge:
+        raise HTTPException(status_code=401, detail="Challenge non valida o scaduta")
+
+    user = db.scalar(select(Utente).where(Utente.id == challenge.utente_id, Utente.attivo.is_(True)))
+    if not user:
+        raise HTTPException(status_code=401, detail="Utente non valido")
+
+    user_key = db.scalar(
+        select(UserKey).where(
+            UserKey.id == payload.key_id,
+            UserKey.utente_id == user.id,
+            UserKey.status == UserKeyStatus.ACTIVE,
+            ((UserKey.valid_to.is_(None)) | (UserKey.valid_to > now)),
+        )
+    )
+    if not user_key:
+        raise HTTPException(status_code=401, detail="Chiave non valida o revocata")
+
+    if not verify_signature(user_key.public_key_pem, challenge.challenge, payload.signature_b64):
+        challenge.used_at = now
+        append_audit(
+            db,
+            azione="auth:login_key",
+            entita="utenti",
+            entita_id=str(user.id),
+            esito="KO",
+            utente_id=user.id,
+            ip=request.client.host if request.client else None,
+            dettagli={"reason": "invalid_signature", "key_id": str(payload.key_id)},
+        )
+        db.commit()
+        raise HTTPException(status_code=401, detail="Firma non valida")
+
+    challenge.used_at = now
+    user_key.last_used_at = now
+
+    token = create_access_token(
+        subject=str(user.id),
+        extra_claims={"role": user.ruolo.code.value, "groups": user_groups(user)},
+    )
+    append_audit(
+        db,
+        azione="auth:login_key",
+        entita="utenti",
+        entita_id=str(user.id),
+        esito="OK",
+        utente_id=user.id,
+        ip=request.client.host if request.client else None,
+        dettagli={"key_id": str(payload.key_id)},
+    )
+    db.commit()
+    return LoginOut(access_token=token)
+
+
 @app.get("/auth/me", response_model=AuthMeOut)
 def auth_me(user: Utente = Depends(get_current_user)) -> AuthMeOut:
     return AuthMeOut(
@@ -208,14 +391,14 @@ def list_users(user: Utente = Depends(get_admin_user), db: Session = Depends(get
     ]
 
 
-@app.post("/admin/users", response_model=UserOut)
-def create_user(payload: UserCreateIn, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> UserOut:
+@app.post("/admin/users", response_model=UserCreateOut)
+def create_user(payload: UserCreateIn, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> UserCreateOut:
     username = payload.username.strip()
     if not username:
         raise HTTPException(status_code=400, detail="Username obbligatorio")
 
-    if len(payload.password) < 8:
-        raise HTTPException(status_code=400, detail="Password troppo corta (minimo 8 caratteri)")
+    if len(payload.key_passphrase.strip()) < 8:
+        raise HTTPException(status_code=400, detail="Passphrase chiave troppo corta (minimo 8 caratteri)")
 
     existing = db.scalar(select(Utente).where(Utente.username == username))
     if existing:
@@ -225,16 +408,36 @@ def create_user(payload: UserCreateIn, user: Utente = Depends(get_admin_user), d
     if not role:
         raise HTTPException(status_code=400, detail="Ruolo non valido")
 
+    if payload.sede_id:
+        sede = db.scalar(select(Sede).where(Sede.id == payload.sede_id, Sede.attiva.is_(True)))
+        if not sede:
+            raise HTTPException(status_code=404, detail="Sede non trovata o disattivata")
+
+    private_key_pem, public_key_pem, fingerprint = generate_ed25519_keypair()
+    key_valid_to = valid_until(payload.key_valid_days)
+    encrypted_private_key_pem = encrypt_private_key_pem(private_key_pem, payload.key_passphrase.strip())
+
     new_user = Utente(
         username=username,
-        password_hash=hash_password(payload.password),
+        password_hash=hash_password(secrets.token_urlsafe(32)),
         ruolo_id=role.id,
         sede_id=payload.sede_id,
         attivo=payload.attivo,
     )
     db.add(new_user)
     db.flush()
-    db.refresh(new_user)
+
+    user_key = UserKey(
+        utente_id=new_user.id,
+        nome=payload.key_name.strip() or "default",
+        public_key_pem=public_key_pem,
+        fingerprint=fingerprint,
+        status=UserKeyStatus.ACTIVE,
+        valid_to=key_valid_to,
+        created_by=user.id,
+    )
+    db.add(user_key)
+    db.flush()
 
     append_audit(
         db,
@@ -243,17 +446,155 @@ def create_user(payload: UserCreateIn, user: Utente = Depends(get_admin_user), d
         entita_id=str(new_user.id),
         esito="OK",
         utente_id=user.id,
-        dettagli={"role": payload.role.value, "attivo": payload.attivo},
+        dettagli={
+            "role": payload.role.value,
+            "attivo": payload.attivo,
+            "sede_id": str(payload.sede_id) if payload.sede_id else None,
+            "key_id": str(user_key.id),
+            "key_fingerprint": fingerprint,
+            "key_valid_to": key_valid_to.isoformat(),
+        },
     )
     db.commit()
 
-    return UserOut(
+    return UserCreateOut(
         id=new_user.id,
         username=new_user.username,
-        role=new_user.ruolo.code,
-        groups=user_groups(new_user),
+        role=payload.role,
+        groups=["admin"] if payload.role == UserRole.AMM_CENTRALE else ["educatore"],
         attivo=new_user.attivo,
         sede_id=new_user.sede_id,
+        key_id=user_key.id,
+        key_fingerprint=fingerprint,
+        key_expires_at=key_valid_to,
+        key_file_name=f"{new_user.username}-{str(user_key.id)[:8]}.rnk",
+        key_file_payload=build_key_file_payload(
+            key_id=user_key.id,
+            username=new_user.username,
+            role=payload.role.value,
+            sede_id=new_user.sede_id,
+            fingerprint=fingerprint,
+            encrypted_private_key_pem=encrypted_private_key_pem,
+            valid_to=key_valid_to,
+        ),
+    )
+
+
+@app.get("/admin/users/{user_id}/keys", response_model=list[UserKeyOut])
+def list_user_keys(user_id: uuid.UUID, user: Utente = Depends(get_admin_user), db: Session = Depends(get_db)) -> list[UserKeyOut]:
+    target = db.scalar(select(Utente).where(Utente.id == user_id))
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    rows = db.scalars(select(UserKey).where(UserKey.utente_id == user_id).order_by(UserKey.created_at.desc())).all()
+    return [
+        UserKeyOut(
+            id=row.id,
+            nome=row.nome,
+            fingerprint=row.fingerprint,
+            status=row.status,
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            revoked_at=row.revoked_at,
+            revoked_reason=row.revoked_reason,
+            last_used_at=row.last_used_at,
+        )
+        for row in rows
+    ]
+
+
+@app.post("/admin/users/{user_id}/keys", response_model=UserKeyIssueOut)
+def issue_user_key(
+    user_id: uuid.UUID,
+    payload: UserKeyIssueIn,
+    user: Utente = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+) -> UserKeyIssueOut:
+    target = db.scalar(select(Utente).where(Utente.id == user_id, Utente.attivo.is_(True)))
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato o disattivo")
+
+    private_key_pem, public_key_pem, fingerprint = generate_ed25519_keypair()
+    key_valid_to = valid_until(payload.key_valid_days)
+    encrypted_private_key_pem = encrypt_private_key_pem(private_key_pem, payload.key_passphrase.strip())
+
+    user_key = UserKey(
+        utente_id=target.id,
+        nome=payload.key_name.strip() or "default",
+        public_key_pem=public_key_pem,
+        fingerprint=fingerprint,
+        status=UserKeyStatus.ACTIVE,
+        valid_to=key_valid_to,
+        created_by=user.id,
+    )
+    db.add(user_key)
+    db.flush()
+    append_audit(
+        db,
+        azione="admin:issue_user_key",
+        entita="user_keys",
+        entita_id=str(user_key.id),
+        esito="OK",
+        utente_id=user.id,
+        dettagli={"target_user_id": str(target.id), "key_valid_to": key_valid_to.isoformat()},
+    )
+    db.commit()
+
+    return UserKeyIssueOut(
+        key_id=user_key.id,
+        key_fingerprint=fingerprint,
+        key_expires_at=key_valid_to,
+        key_file_name=f"{target.username}-{str(user_key.id)[:8]}.rnk",
+        key_file_payload=build_key_file_payload(
+            key_id=user_key.id,
+            username=target.username,
+            role=target.ruolo.code.value,
+            sede_id=target.sede_id,
+            fingerprint=fingerprint,
+            encrypted_private_key_pem=encrypted_private_key_pem,
+            valid_to=key_valid_to,
+        ),
+    )
+
+
+@app.post("/admin/users/{user_id}/keys/{key_id}/revoke", response_model=UserKeyOut)
+def revoke_user_key(
+    user_id: uuid.UUID,
+    key_id: uuid.UUID,
+    payload: UserKeyRevokeIn,
+    user: Utente = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+) -> UserKeyOut:
+    user_key = db.scalar(select(UserKey).where(UserKey.id == key_id, UserKey.utente_id == user_id))
+    if not user_key:
+        raise HTTPException(status_code=404, detail="Chiave non trovata")
+    if user_key.status == UserKeyStatus.REVOKED:
+        raise HTTPException(status_code=409, detail="Chiave gia revocata")
+
+    user_key.status = UserKeyStatus.REVOKED
+    user_key.revoked_at = datetime.now(timezone.utc)
+    user_key.revoked_reason = payload.reason.strip()[:255] or "Revoca amministrativa"
+
+    append_audit(
+        db,
+        azione="admin:revoke_user_key",
+        entita="user_keys",
+        entita_id=str(user_key.id),
+        esito="OK",
+        utente_id=user.id,
+        dettagli={"target_user_id": str(user_id), "reason": user_key.revoked_reason},
+    )
+    db.commit()
+
+    return UserKeyOut(
+        id=user_key.id,
+        nome=user_key.nome,
+        fingerprint=user_key.fingerprint,
+        status=user_key.status,
+        valid_from=user_key.valid_from,
+        valid_to=user_key.valid_to,
+        revoked_at=user_key.revoked_at,
+        revoked_reason=user_key.revoked_reason,
+        last_used_at=user_key.last_used_at,
     )
 
 

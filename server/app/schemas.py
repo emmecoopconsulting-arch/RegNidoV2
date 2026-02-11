@@ -3,12 +3,36 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models import PresenceEventType, UserRole
+from app.models import PresenceEventType, UserKeyStatus, UserRole
 
 
 class LoginIn(BaseModel):
     username: str
     password: str
+
+
+class AuthChallengeIn(BaseModel):
+    username: str
+
+
+class AuthChallengeOut(BaseModel):
+    challenge_id: uuid.UUID
+    challenge: str
+    expires_at: datetime
+
+
+class AuthChallengeCompleteIn(BaseModel):
+    challenge_id: uuid.UUID
+    key_id: uuid.UUID
+    signature_b64: str
+
+
+class AuthBootstrapKeyIn(BaseModel):
+    username: str
+    password: str
+    key_name: str = "bootstrap"
+    key_passphrase: str = Field(min_length=8)
+    key_valid_days: int = 365
 
 
 class LoginOut(BaseModel):
@@ -123,10 +147,56 @@ class DeviceClaimOut(BaseModel):
 
 class UserCreateIn(BaseModel):
     username: str
-    password: str
     role: UserRole = UserRole.EDUCATORE
     attivo: bool = True
     sede_id: uuid.UUID | None = None
+    key_name: str = "default"
+    key_passphrase: str = Field(min_length=8)
+    key_valid_days: int = 180
+
+
+class UserCreateOut(BaseModel):
+    id: uuid.UUID
+    username: str
+    role: UserRole
+    groups: list[str]
+    attivo: bool
+    sede_id: uuid.UUID | None = None
+    key_id: uuid.UUID
+    key_fingerprint: str
+    key_expires_at: datetime | None = None
+    key_file_name: str
+    key_file_payload: str
+
+
+class UserKeyOut(BaseModel):
+    id: uuid.UUID
+    nome: str
+    fingerprint: str
+    status: UserKeyStatus
+    valid_from: datetime
+    valid_to: datetime | None = None
+    revoked_at: datetime | None = None
+    revoked_reason: str | None = None
+    last_used_at: datetime | None = None
+
+
+class UserKeyRevokeIn(BaseModel):
+    reason: str = "Revoca amministrativa"
+
+
+class UserKeyIssueIn(BaseModel):
+    key_name: str = "default"
+    key_passphrase: str = Field(min_length=8)
+    key_valid_days: int = 180
+
+
+class UserKeyIssueOut(BaseModel):
+    key_id: uuid.UUID
+    key_fingerprint: str
+    key_expires_at: datetime | None = None
+    key_file_name: str
+    key_file_payload: str
 
 
 class UserOut(BaseModel):

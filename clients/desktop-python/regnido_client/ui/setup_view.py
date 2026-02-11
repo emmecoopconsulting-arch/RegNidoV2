@@ -2,6 +2,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -19,7 +20,7 @@ class SetupView(QWidget):
     save_requested = Signal(str, str)
     test_requested = Signal(str)
 
-    admin_login_requested = Signal(str, str, str)
+    admin_login_requested = Signal(str, str, str, str)
     admin_refresh_sedi_requested = Signal()
     admin_create_sede_requested = Signal(str)
     admin_create_bambino_requested = Signal(str, str, str, bool)
@@ -38,8 +39,12 @@ class SetupView(QWidget):
         self.save_button = QPushButton("Attiva dispositivo e continua")
 
         self.admin_username_input = QLineEdit("admin")
-        self.admin_password_input = QLineEdit()
-        self.admin_password_input.setEchoMode(QLineEdit.Password)
+        self.admin_key_file_input = QLineEdit()
+        self.admin_key_file_input.setPlaceholderText("Seleziona file chiave admin")
+        self.admin_key_file_button = QPushButton("Sfoglia...")
+        self.admin_key_file_button.clicked.connect(self._pick_admin_key_file)
+        self.admin_passphrase_input = QLineEdit()
+        self.admin_passphrase_input.setEchoMode(QLineEdit.Password)
         self.admin_login_button = QPushButton("Login admin")
         self.admin_status_label = QLabel("Admin non autenticato")
 
@@ -106,7 +111,13 @@ class SetupView(QWidget):
 
         auth_form = QFormLayout()
         auth_form.addRow("Admin username", self.admin_username_input)
-        auth_form.addRow("Admin password", self.admin_password_input)
+        key_file_row = QHBoxLayout()
+        key_file_row.addWidget(self.admin_key_file_input, 1)
+        key_file_row.addWidget(self.admin_key_file_button)
+        key_file_widget = QWidget()
+        key_file_widget.setLayout(key_file_row)
+        auth_form.addRow("Admin file chiave", key_file_widget)
+        auth_form.addRow("Admin passphrase", self.admin_passphrase_input)
 
         auth_row = QHBoxLayout()
         auth_row.addWidget(self.admin_login_button)
@@ -197,8 +208,19 @@ class SetupView(QWidget):
         self.admin_login_requested.emit(
             self.api_input.text().strip(),
             self.admin_username_input.text().strip(),
-            self.admin_password_input.text(),
+            self.admin_key_file_input.text().strip(),
+            self.admin_passphrase_input.text(),
         )
+
+    def _pick_admin_key_file(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleziona file chiave admin",
+            "",
+            "RegNido Key (*.rnk *.pem);;Tutti i file (*)",
+        )
+        if selected:
+            self.admin_key_file_input.setText(selected)
 
     def _emit_admin_create_sede(self) -> None:
         self.admin_create_sede_requested.emit(self.sede_nome_input.text().strip())

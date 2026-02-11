@@ -15,6 +15,8 @@ from app.models import (
     Role,
     RolePermission,
     Sede,
+    UserKey,
+    UserKeyStatus,
     UserRole,
     Utente,
 )
@@ -77,6 +79,16 @@ def authenticate_user(db: Session, username: str, password: str) -> Utente:
     user = db.scalar(select(Utente).where(Utente.username == username, Utente.attivo.is_(True)))
     if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
+    now = datetime.now(timezone.utc)
+    active_key = db.scalar(
+        select(UserKey.id).where(
+            UserKey.utente_id == user.id,
+            UserKey.status == UserKeyStatus.ACTIVE,
+            (UserKey.valid_to.is_(None) | (UserKey.valid_to > now)),
+        )
+    )
+    if active_key:
+        raise HTTPException(status_code=403, detail="Utente abilitato a chiave: usare autenticazione challenge-response")
     return user
 
 

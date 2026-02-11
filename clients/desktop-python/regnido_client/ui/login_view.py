@@ -1,5 +1,6 @@
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -11,7 +12,7 @@ from PySide6.QtWidgets import (
 
 
 class LoginView(QWidget):
-    login_requested = Signal(str, str)
+    login_requested = Signal(str, str, str)
     setup_requested = Signal()
 
     def __init__(self) -> None:
@@ -19,9 +20,13 @@ class LoginView(QWidget):
         self.status_label = QLabel("")
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText("Username")
-        self.password_input = QLineEdit()
-        self.password_input.setPlaceholderText("Password")
-        self.password_input.setEchoMode(QLineEdit.Password)
+        self.key_file_input = QLineEdit()
+        self.key_file_input.setPlaceholderText("Seleziona file chiave (.rnk)")
+        self.key_file_button = QPushButton("Sfoglia...")
+        self.key_file_button.clicked.connect(self._pick_key_file)
+        self.passphrase_input = QLineEdit()
+        self.passphrase_input.setPlaceholderText("Passphrase chiave")
+        self.passphrase_input.setEchoMode(QLineEdit.Password)
 
         self.login_button = QPushButton("Accedi")
         self.setup_button = QPushButton("Configura backend")
@@ -30,7 +35,13 @@ class LoginView(QWidget):
 
         form = QFormLayout()
         form.addRow("Username", self.username_input)
-        form.addRow("Password", self.password_input)
+        file_row = QHBoxLayout()
+        file_row.addWidget(self.key_file_input, 1)
+        file_row.addWidget(self.key_file_button)
+        file_widget = QWidget()
+        file_widget.setLayout(file_row)
+        form.addRow("File chiave", file_widget)
+        form.addRow("Passphrase", self.passphrase_input)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.setup_button)
@@ -46,7 +57,21 @@ class LoginView(QWidget):
         self.setLayout(root)
 
     def _emit_login(self) -> None:
-        self.login_requested.emit(self.username_input.text().strip(), self.password_input.text())
+        self.login_requested.emit(
+            self.username_input.text().strip(),
+            self.key_file_input.text().strip(),
+            self.passphrase_input.text(),
+        )
+
+    def _pick_key_file(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleziona file chiave",
+            "",
+            "RegNido Key (*.rnk *.pem);;Tutti i file (*)",
+        )
+        if selected:
+            self.key_file_input.setText(selected)
 
     def set_status(self, message: str, is_error: bool = False) -> None:
         color = "#b00020" if is_error else "#1e6a2f"

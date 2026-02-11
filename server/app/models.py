@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint, JSON
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,6 +17,11 @@ class UserRole(str, enum.Enum):
 class PresenceEventType(str, enum.Enum):
     ENTRATA = "ENTRATA"
     USCITA = "USCITA"
+
+
+class UserKeyStatus(str, enum.Enum):
+    ACTIVE = "ACTIVE"
+    REVOKED = "REVOKED"
 
 
 class Sede(Base):
@@ -133,3 +138,35 @@ class AuditLog(Base):
     esito: Mapped[str] = mapped_column(String(50), nullable=False)
     ip: Mapped[str | None] = mapped_column(String(80), nullable=True)
     device_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class UserKey(Base):
+    __tablename__ = "user_keys"
+    __table_args__ = (UniqueConstraint("fingerprint", name="uq_user_keys_fingerprint"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    utente_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("utenti.id"), nullable=False)
+    nome: Mapped[str] = mapped_column(String(120), nullable=False, default="default")
+    public_key_pem: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[UserKeyStatus] = mapped_column(Enum(UserKeyStatus), nullable=False, default=UserKeyStatus.ACTIVE)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("utenti.id"), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+
+class AuthChallenge(Base):
+    __tablename__ = "auth_challenges"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    utente_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("utenti.id"), nullable=False)
+    challenge: Mapped[str] = mapped_column(String(255), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)

@@ -5,3 +5,5 @@ psycopg[binary]==3.2.9
 passlib==1.7.4
 python-jose[cryptography]==3.3.0
 pydantic-settings==2.10.1
+
+cryptography==44.0.2
