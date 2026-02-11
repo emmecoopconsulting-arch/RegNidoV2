@@ -233,6 +233,23 @@ def _safe_name_part(raw: str) -> str:
     return compact[:80] or "ND"
 
 
+def _format_hms(total_seconds: int) -> str:
+    total = max(0, int(total_seconds))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _fixed_column(value: str, width: int) -> str:
+    text = (value or "").replace("\n", " ").strip()
+    if len(text) > width:
+        if width <= 3:
+            return text[:width]
+        return text[: width - 3] + "..."
+    return text.ljust(width)
+
+
 def build_presence_history_rows(
     db: Session,
     *,
@@ -1271,12 +1288,16 @@ def export_presence_history_pdf(
     )
     sedi = allowed_sedi_for_user(db, user)
     sedi_by_id = {item.id: item.nome for item in sedi}
+    allowed_sede_ids = {item.id for item in sedi}
+    if sede_id and sede_id not in allowed_sede_ids:
+        raise HTTPException(status_code=403, detail="Sede non autorizzata per questo utente")
+    target_sede_ids = [sede_id] if sede_id else list(allowed_sede_ids)
 
     iscritto_label = "Tutti"
     if bambino_id:
         target_bambino = db.scalar(select(Bambino).where(Bambino.id == bambino_id))
         if target_bambino:
-            iscritto_label = f"{target_bambino.cognome}-{target_bambino.nome}"
+            iscritto_label = f"{target_bambino.nome} {target_bambino.cognome}"
 
     sede_label = "Tutte"
     if sede_id:
@@ -1284,58 +1305,94 @@ def export_presence_history_pdf(
     elif len(sedi) == 1:
         sede_label = sedi[0].nome
 
+    event_stmt = (
+        select(Presenza, Bambino, Sede)
+        .join(Bambino, Bambino.id == Presenza.bambino_id)
+        .join(Sede, Sede.id == Presenza.sede_id)
+        .where(
+            Presenza.sede_id.in_(target_sede_ids),
+            Presenza.timestamp_evento >= period_start,
+            Presenza.timestamp_evento < period_end,
+        )
+        .order_by(Presenza.timestamp_evento.desc())
+    )
+    if bambino_id:
+        event_stmt = event_stmt.where(Presenza.bambino_id == bambino_id)
+    event_rows = db.execute(event_stmt).all()
+
+    count_in: dict[uuid.UUID, int] = {}
+    count_out: dict[uuid.UUID, int] = {}
+    for presenza, bambino_row, _ in event_rows:
+        if presenza.tipo_evento == PresenceEventType.ENTRATA:
+            count_in[bambino_row.id] = count_in.get(bambino_row.id, 0) + 1
+        if presenza.tipo_evento == PresenceEventType.USCITA:
+            count_out[bambino_row.id] = count_out.get(bambino_row.id, 0) + 1
+
     filename = f"{_safe_name_part(iscritto_label)}-{_safe_name_part(periodo)}-{_safe_name_part(sede_label)}.pdf"
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    _, height = A4
     y = height - 48
 
-    pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(36, y, "Storico Presenze")
-    y -= 22
-    pdf.setFont("Helvetica", 10)
-    pdf.drawString(36, y, f"Periodo: {unita.strip().lower()} {periodo.strip()} (UTC)")
-    y -= 14
-    pdf.drawString(36, y, f"Sede: {sede_label}")
-    y -= 14
-    pdf.drawString(36, y, f"Iscritto: {iscritto_label}")
-    y -= 22
-    pdf.setFont("Helvetica-Bold", 10)
-    pdf.drawString(36, y, "Iscritto")
-    pdf.drawString(220, y, "Sede")
-    pdf.drawString(340, y, "Ingresso")
-    pdf.drawString(420, y, "Uscita")
-    pdf.drawString(490, y, "Totale")
-    y -= 14
-    pdf.setFont("Helvetica", 9)
-
-    for row in rows:
-        if y < 48:
+    def write_line(line: str) -> None:
+        nonlocal y
+        if y < 40:
             pdf.showPage()
             y = height - 48
-            pdf.setFont("Helvetica-Bold", 10)
-            pdf.drawString(36, y, "Iscritto")
-            pdf.drawString(220, y, "Sede")
-            pdf.drawString(340, y, "Ingresso")
-            pdf.drawString(420, y, "Uscita")
-            pdf.drawString(490, y, "Totale")
-            y -= 14
-            pdf.setFont("Helvetica", 9)
-
-        ingresso = row.ingresso.astimezone(timezone.utc).strftime("%H:%M") if row.ingresso else "-"
-        uscita = row.uscita.astimezone(timezone.utc).strftime("%H:%M") if row.uscita else "-"
-        total_seconds = max(0, int(row.tempo_totale_secondi))
-        h = total_seconds // 3600
-        m = (total_seconds % 3600) // 60
-        s = total_seconds % 60
-        total_label = f"{h:02d}:{m:02d}:{s:02d}"
-        pdf.drawString(36, y, f"{row.cognome} {row.nome}"[:34])
-        pdf.drawString(220, y, row.sede_nome[:20])
-        pdf.drawString(340, y, ingresso)
-        pdf.drawString(420, y, uscita)
-        pdf.drawString(490, y, total_label)
+            pdf.setFont("Courier", 10)
+        pdf.drawString(36, y, line)
         y -= 12
+
+    period_end_inclusive = period_end - timedelta(seconds=1)
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    pdf.setFont("Courier", 10)
+    write_line("Registro Nido - Storico")
+    write_line(
+        f"Periodo: {period_start.astimezone(timezone.utc).strftime('%d/%m/%Y')} - "
+        f"{period_end_inclusive.astimezone(timezone.utc).strftime('%d/%m/%Y')}"
+    )
+    write_line(f"Sede: {sede_label}")
+    write_line(f"Persona: {iscritto_label}")
+    write_line(f"Generato: {generated_at}")
+    write_line(f"Utente generatore: {user.username}")
+    write_line("Riepilogo")
+
+    summary_sep = "-" * 100
+    write_line(summary_sep)
+    write_line(
+        f"{_fixed_column('Persona', 30)} {_fixed_column('Sede', 22)} "
+        f"{_fixed_column('Durata', 10)} {_fixed_column('IN', 4)} {_fixed_column('OUT', 4)} {_fixed_column('TOT', 4)}"
+    )
+    write_line(summary_sep)
+    for row in rows:
+        person = f"{row.nome} {row.cognome}".strip()
+        in_count = count_in.get(row.bambino_id, 0)
+        out_count = count_out.get(row.bambino_id, 0)
+        total_events = in_count + out_count
+        write_line(
+            f"{_fixed_column(person, 30)} {_fixed_column(row.sede_nome, 22)} "
+            f"{_fixed_column(_format_hms(row.tempo_totale_secondi), 10)} "
+            f"{str(in_count).rjust(4)} {str(out_count).rjust(4)} {str(total_events).rjust(4)}"
+        )
+
+    write_line("Eventi")
+    events_sep = "-" * 100
+    write_line(events_sep)
+    write_line(
+        f"{_fixed_column('Timestamp', 19)} {_fixed_column('Persona', 30)} "
+        f"{_fixed_column('Sede', 22)} {_fixed_column('Azione', 10)}"
+    )
+    write_line(events_sep)
+    for presenza, bambino_row, sede_row in event_rows:
+        action = "Entrata" if presenza.tipo_evento == PresenceEventType.ENTRATA else "Uscita"
+        ts = presenza.timestamp_evento.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        person = f"{bambino_row.nome} {bambino_row.cognome}".strip()
+        write_line(
+            f"{_fixed_column(ts, 19)} {_fixed_column(person, 30)} "
+            f"{_fixed_column(sede_row.nome, 22)} {_fixed_column(action, 10)}"
+        )
 
     pdf.save()
     return Response(
