@@ -16,12 +16,13 @@ from regnido_client.ui.dashboard_view import DashboardView
 from regnido_client.ui.login_view import LoginView
 from regnido_client.ui.setup_view import SetupView
 from regnido_client.ui.settings_dialog import SettingsDialog
+from regnido_client.version import APP_VERSION
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("RegNido Desktop")
+        self.setWindowTitle(f"RegNido Desktop v{APP_VERSION}")
         self.resize(1100, 700)
 
         self.store = LocalStore(DB_PATH)
@@ -62,6 +63,9 @@ class MainWindow(QMainWindow):
         self.sync_timer = QTimer(self)
         self.sync_timer.setInterval(30000)
         self.sync_timer.timeout.connect(self._sync_pending)
+        self.health_timer = QTimer(self)
+        self.health_timer.setInterval(5000)
+        self.health_timer.timeout.connect(self._probe_connection_health)
 
         self.setup_view.set_values(
             self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL),
@@ -84,6 +88,7 @@ class MainWindow(QMainWindow):
             else:
                 self.stack.setCurrentWidget(self.dashboard)
                 self.sync_timer.start()
+                self.health_timer.start()
                 self._post_login_refresh()
         else:
             self.stack.setCurrentWidget(self.login_view)
@@ -137,6 +142,7 @@ class MainWindow(QMainWindow):
         self.login_view.set_status("Login eseguito")
         self.stack.setCurrentWidget(self.dashboard)
         self.sync_timer.start()
+        self.health_timer.start()
         self._post_login_refresh()
 
     def _show_setup(self) -> None:
@@ -301,6 +307,7 @@ class MainWindow(QMainWindow):
             return
 
     def _post_login_refresh(self) -> None:
+        self._probe_connection_health()
         self._refresh_user_capabilities()
         self._refresh_device()
         self._on_search_requested("")
@@ -308,12 +315,31 @@ class MainWindow(QMainWindow):
 
     def _on_logout_requested(self) -> None:
         self.sync_timer.stop()
+        self.health_timer.stop()
         self.store.set_setting("access_token", "")
         self.api.set_token("")
         self.dashboard.set_admin_tabs_visible(False)
         self.stack.setCurrentWidget(self.login_view)
         self.login_view.set_status("Logout eseguito")
         self._update_login_health()
+
+    def _probe_connection_health(self) -> None:
+        probe = self.api.ping()
+        now_local = datetime.now().strftime("%H:%M:%S")
+        latency_ms = int(probe.get("latency_ms", 0))
+        if bool(probe.get("ok")):
+            skew = abs(int(probe.get("clock_skew_seconds", 0)))
+            msg = f"online | ping {latency_ms} ms | check {now_local}"
+            if skew > 300:
+                msg += f" | clock skew ~{skew}s"
+            self.dashboard.set_connection_status(msg, ok=True)
+            return
+        error = str(probe.get("error", "backend non raggiungibile")).strip()
+        compact_error = error if len(error) <= 80 else f"{error[:77]}..."
+        self.dashboard.set_connection_status(
+            f"offline | ping {latency_ms} ms | check {now_local} | {compact_error}",
+            ok=False,
+        )
 
     def _refresh_user_capabilities(self) -> None:
         try:

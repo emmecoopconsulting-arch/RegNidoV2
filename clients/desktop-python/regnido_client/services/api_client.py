@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -36,6 +37,26 @@ class ApiClient:
             return response.json().get("status") == "ok"
         except httpx.HTTPError:
             return False
+
+    def ping(self) -> dict[str, Any]:
+        started = perf_counter()
+        try:
+            response = httpx.get(f"{self.base_url}/health", timeout=4.0)
+            latency_ms = int((perf_counter() - started) * 1000)
+            response.raise_for_status()
+            data = response.json()
+            server_dt_raw = str(data.get("server_time_utc", ""))
+            server_dt = datetime.fromisoformat(server_dt_raw.replace("Z", "+00:00")) if server_dt_raw else None
+            local_dt = datetime.now(timezone.utc)
+            skew_seconds = int((local_dt - server_dt).total_seconds()) if server_dt else 0
+            return {
+                "ok": data.get("status") == "ok",
+                "latency_ms": latency_ms,
+                "clock_skew_seconds": skew_seconds,
+            }
+        except httpx.HTTPError as exc:
+            latency_ms = int((perf_counter() - started) * 1000)
+            return {"ok": False, "latency_ms": latency_ms, "error": str(exc)}
 
     def health_details(self) -> dict[str, Any]:
         response = httpx.get(f"{self.base_url}/health", timeout=4.0)

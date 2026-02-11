@@ -12,6 +12,7 @@ Client desktop MVP per RegNido con:
 - `regnido_client/ui/`: viste PySide6
 - `regnido_client/services/api_client.py`: chiamate HTTP
 - `regnido_client/storage/local_store.py`: storage locale (settings + pending queue)
+- `regnido_client/version.py`: versione client desktop (`APP_VERSION`)
 
 ## Requisiti
 - Python 3.11+
@@ -58,6 +59,9 @@ Nota dispositivo:
 Nota clock/fuso:
 - Se l'orologio locale e quello server differiscono di oltre 5 minuti, l'app mostra warning.
 - In quel caso sincronizza data/ora della macchina (NTP) per evitare errori token.
+
+Stato connessione:
+- in dashboard l'app esegue un controllo backend ogni 5 secondi e mostra ping (ms), orario ultimo check e stato online/offline.
 
 ## Endpoint server usati dal client
 - `GET /health`
