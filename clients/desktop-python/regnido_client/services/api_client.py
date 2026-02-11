@@ -319,10 +319,10 @@ class ApiClient:
         response.raise_for_status()
         return [Bambino(id=row["id"], nome=row["nome"], cognome=row["cognome"]) for row in response.json()]
 
-    def list_bambini_presence_state(self, dispositivo_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    def list_bambini_presence_state(self, limit: int = 200) -> list[dict[str, Any]]:
         response = httpx.get(
             f"{self.base_url}/catalog/presenze-stato",
-            params={"dispositivo_id": dispositivo_id, "limit": limit},
+            params={"limit": limit},
             headers=self._headers(),
             timeout=8.0,
         )

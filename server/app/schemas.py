@@ -50,7 +50,7 @@ class AuthMeOut(BaseModel):
 
 class PresenceEventIn(BaseModel):
     bambino_id: uuid.UUID
-    dispositivo_id: uuid.UUID
+    dispositivo_id: uuid.UUID | None = None
     client_event_id: uuid.UUID
     tipo_evento: PresenceEventType | None = None
     timestamp_evento: datetime = Field(default_factory=datetime.utcnow)

@@ -1129,19 +1129,23 @@ def get_device_profile(device_id: uuid.UUID, user: Utente = Depends(get_current_
 
 @app.get("/catalog/bambini", response_model=list[BambinoOut])
 def list_bambini(
-    dispositivo_id: uuid.UUID,
+    dispositivo_id: uuid.UUID | None = None,
     q: str | None = None,
     limit: int = 100,
     user: Utente = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[BambinoOut]:
     limit = min(max(limit, 1), 500)
-    device = db.scalar(select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True)))
-    if not device:
-        raise HTTPException(status_code=404, detail="Dispositivo non trovato o disattivato")
+    sede_id = user.sede_id
+    if not sede_id and dispositivo_id:
+        device = db.scalar(select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True)))
+        if device:
+            sede_id = device.sede_id
+    if not sede_id:
+        raise HTTPException(status_code=400, detail="Utente non associato a una sede")
 
     stmt = select(Bambino).where(
-        Bambino.sede_id == device.sede_id,
+        Bambino.sede_id == sede_id,
         Bambino.attivo.is_(True),
     )
     if q:
@@ -1199,18 +1203,22 @@ def list_accessible_iscritti(
 
 @app.get("/catalog/presenze-stato", response_model=list[BambinoPresenceStateOut])
 def list_bambini_presence_state(
-    dispositivo_id: uuid.UUID,
+    dispositivo_id: uuid.UUID | None = None,
     limit: int = 200,
     user: Utente = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[BambinoPresenceStateOut]:
     limit = min(max(limit, 1), 500)
-    device = db.scalar(select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True)))
-    if not device:
-        raise HTTPException(status_code=404, detail="Dispositivo non trovato o disattivato")
+    sede_id = user.sede_id
+    if not sede_id and dispositivo_id:
+        device = db.scalar(select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True)))
+        if device:
+            sede_id = device.sede_id
+    if not sede_id:
+        raise HTTPException(status_code=400, detail="Utente non associato a una sede")
 
     stmt = select(Bambino).where(
-        Bambino.sede_id == device.sede_id,
+        Bambino.sede_id == sede_id,
         Bambino.attivo.is_(True),
     )
     bambini = db.scalars(stmt.order_by(Bambino.nome.asc(), Bambino.cognome.asc()).limit(limit)).all()
@@ -1220,7 +1228,7 @@ def list_bambini_presence_state(
     for bambino in bambini:
         latest = db.scalar(
             select(Presenza)
-            .where(Presenza.bambino_id == bambino.id, Presenza.sede_id == device.sede_id)
+            .where(Presenza.bambino_id == bambino.id, Presenza.sede_id == sede_id)
             .order_by(Presenza.timestamp_evento.desc())
         )
         dentro = bool(latest and latest.tipo_evento == PresenceEventType.ENTRATA)
@@ -1229,7 +1237,7 @@ def list_bambini_presence_state(
             select(Presenza)
             .where(
                 Presenza.bambino_id == bambino.id,
-                Presenza.sede_id == device.sede_id,
+                Presenza.sede_id == sede_id,
                 Presenza.timestamp_evento >= today_start,
                 Presenza.timestamp_evento < today_end,
             )

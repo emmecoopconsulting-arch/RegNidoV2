@@ -2,7 +2,6 @@ import uuid
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import platform
 
 import httpx
 from PySide6.QtCore import QTimer
@@ -18,6 +17,8 @@ from regnido_client.ui.login_view import LoginView
 from regnido_client.ui.setup_view import SetupView
 from regnido_client.ui.settings_dialog import SettingsDialog
 from regnido_client.version import APP_VERSION
+
+VIRTUAL_DEVICE_ID = "00000000-0000-0000-0000-000000000000"
 
 
 class MainWindow(QMainWindow):
@@ -178,7 +179,6 @@ class MainWindow(QMainWindow):
         self.store.set_setting("access_token", token)
         self.store.set_setting("username", username)
         self.store.set_setting("key_file_path", key_file_path)
-        self._ensure_device_registration()
         self.login_view.set_status("Login eseguito")
         self.stack.setCurrentWidget(self.dashboard)
         self.sync_timer.start()
@@ -322,32 +322,6 @@ class MainWindow(QMainWindow):
         self.setup_view.set_status("Configurazione salvata")
         self.stack.setCurrentWidget(self.login_view)
         self._update_login_health()
-
-    def _ensure_device_registration(self) -> None:
-        existing_device_id = self.store.get_setting("device_id", "")
-        if existing_device_id:
-            return
-
-        try:
-            profile = self.api.auth_me()
-        except httpx.HTTPError:
-            return
-
-        groups = {str(group).lower() for group in profile.get("groups", [])}
-        if "admin" in groups:
-            return
-
-        client_id = self.store.get_setting("client_installation_id", "")
-        if not client_id:
-            client_id = str(uuid.uuid4())
-            self.store.set_setting("client_installation_id", client_id)
-
-        device_name = platform.node().strip() or "Desktop"
-        try:
-            registered = self.api.register_device(client_id=client_id, nome=device_name)
-            self.store.set_setting("device_id", str(registered.get("device_id", "")))
-        except httpx.HTTPError:
-            return
 
     def _post_login_refresh(self) -> None:
         self._probe_connection_health()
@@ -671,48 +645,38 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         dialog = SettingsDialog(
             api_base_url=self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL),
-            device_id=self.store.get_setting("device_id", ""),
             parent=self,
         )
         if dialog.exec() != SettingsDialog.Accepted:
             return
 
-        api_base_url, device_id = dialog.values()
+        api_base_url = dialog.values()
         if not api_base_url:
             self._show_error("API Base URL obbligatorio")
             return
 
         self.store.set_setting("api_base_url", api_base_url)
-        self.store.set_setting("device_id", device_id)
         self.api.set_base_url(api_base_url)
-        if not device_id:
-            self._ensure_device_registration()
         self._refresh_device()
         self._on_search_requested("")
 
     def _refresh_device(self) -> None:
-        device_id = self.store.get_setting("device_id", "")
-        if not device_id:
-            self.dashboard.set_device_label("non configurato")
-            return
-
         try:
-            device = self.api.get_device(device_id)
-            self.dashboard.set_device_label(f"{device['nome']} ({device['sede_nome']})")
+            me = self.api.auth_me()
+            sede_id = str(me.get("sede_id") or "")
+            if sede_id:
+                self.dashboard.set_device_label(f"sede utente ({sede_id[:8]})")
+            else:
+                self.dashboard.set_device_label("non richiesto")
             self.dashboard.set_connection_status("online", ok=True)
         except httpx.HTTPError as exc:
             self.dashboard.set_connection_status("offline/errore", ok=False)
-            self.dashboard.set_device_label("errore caricamento")
-            self._show_error(f"Impossibile leggere dispositivo: {exc}")
+            self.dashboard.set_device_label("errore caricamento profilo")
+            self._show_error(f"Impossibile leggere profilo utente: {exc}")
 
     def _on_search_requested(self, query: str = "") -> None:
-        device_id = self.store.get_setting("device_id", "")
-        if not device_id:
-            self.dashboard.set_presence_rows([])
-            return
-
         try:
-            rows = self.api.list_bambini_presence_state(dispositivo_id=device_id, limit=300)
+            rows = self.api.list_bambini_presence_state(limit=300)
             self.dashboard.set_presence_rows(rows)
             self.dashboard.set_connection_status("online", ok=True)
         except httpx.HTTPError:
@@ -720,14 +684,9 @@ class MainWindow(QMainWindow):
             self.dashboard.set_presence_rows([])
 
     def _submit_presence_event(self, bambino_id: str, tipo_evento: str, endpoint: str) -> None:
-        device_id = self.store.get_setting("device_id", "")
-        if not device_id:
-            self._show_error("Configura il Device ID dalle impostazioni")
-            return
-
         payload = {
             "bambino_id": bambino_id,
-            "dispositivo_id": device_id,
+            "dispositivo_id": VIRTUAL_DEVICE_ID,
             "client_event_id": str(uuid.uuid4()),
             "tipo_evento": tipo_evento,
             "timestamp_evento": datetime.now(timezone.utc).isoformat(),

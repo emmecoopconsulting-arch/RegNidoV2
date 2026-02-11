@@ -126,7 +126,7 @@ def create_presence_event(
     *,
     tipo: PresenceEventType,
     bambino_id: uuid.UUID,
-    dispositivo_id: uuid.UUID,
+    dispositivo_id: uuid.UUID | None,
     client_event_id: uuid.UUID,
     timestamp_evento: datetime,
     creato_da: uuid.UUID,
@@ -135,9 +135,27 @@ def create_presence_event(
     if existing:
         return existing
 
-    dispositivo = db.scalar(select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True)))
+    dispositivo = None
+    if dispositivo_id:
+        dispositivo = db.scalar(select(Dispositivo).where(Dispositivo.id == dispositivo_id, Dispositivo.attivo.is_(True)))
+
     if not dispositivo:
-        raise HTTPException(status_code=404, detail="Dispositivo non trovato o disattivato")
+        user = db.scalar(select(Utente).where(Utente.id == creato_da, Utente.attivo.is_(True)))
+        if not user or not user.sede_id:
+            raise HTTPException(status_code=400, detail="Utente non associato a una sede")
+        sede = db.scalar(select(Sede).where(Sede.id == user.sede_id, Sede.attiva.is_(True)))
+        if not sede:
+            raise HTTPException(status_code=404, detail="Sede utente non trovata o disattivata")
+        dispositivo = db.scalar(
+            select(Dispositivo)
+            .where(Dispositivo.sede_id == sede.id, Dispositivo.attivo.is_(True))
+            .order_by(Dispositivo.created_at.asc())
+        )
+        if not dispositivo:
+            dispositivo = Dispositivo(nome=f"Virtuale-{str(sede.id)[:8]}", sede_id=sede.id, attivo=True)
+            db.add(dispositivo)
+            db.flush()
+        dispositivo_id = dispositivo.id
 
     bambino = db.scalar(
         select(Bambino).where(
