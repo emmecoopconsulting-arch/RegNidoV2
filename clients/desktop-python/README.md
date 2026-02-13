@@ -56,6 +56,50 @@ Con avvio automatico al login utente:
 ./clients/desktop-python/install_linux_lite.sh --autostart
 ```
 
+Se l'utente operativo non ha sudo, usa 2 fasi:
+```bash
+# fase 1 (utente admin/sudo)
+./clients/desktop-python/install_linux_lite.sh --system-only
+
+# fase 2 (utente operativo, senza sudo)
+./clients/desktop-python/install_linux_lite.sh --skip-system
+```
+
+## Build da sudo e uso da utente normale (system-wide)
+Se vuoi compilare una volta sola da utente admin/sudo e far usare l'app a utenti non-sudo:
+
+```bash
+cd clients/desktop-python
+python3 -m venv .venv-build
+source .venv-build/bin/activate
+pip install -U pip
+pip install -r requirements.txt pyinstaller
+pyinstaller --noconfirm --clean --name regnido-desktop --windowed --onedir main.py
+```
+
+Installa il bundle in percorso condiviso:
+
+```bash
+sudo mkdir -p /opt/regnido
+sudo cp -r dist/regnido-desktop /opt/regnido/
+sudo chown -R root:root /opt/regnido/regnido-desktop
+sudo chmod -R a+rX /opt/regnido/regnido-desktop
+```
+
+Crea comando globale:
+
+```bash
+echo '#!/usr/bin/env bash
+exec /opt/regnido/regnido-desktop/regnido-desktop "$@"' | sudo tee /usr/local/bin/regnido-desktop >/dev/null
+sudo chmod +x /usr/local/bin/regnido-desktop
+```
+
+Da questo momento qualsiasi utente puo avviare:
+
+```bash
+regnido-desktop
+```
+
 ## Primo avvio: generazione chiave iniziale admin
 Prima del primo login è necessario creare almeno un file chiave `.rnk` per l'utente admin bootstrap:
 

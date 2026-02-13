@@ -24,9 +24,26 @@ DESKTOP_FILE="${DESKTOP_DIR}/${BIN_NAME}.desktop"
 AUTOSTART_FILE="${AUTOSTART_DIR}/${BIN_NAME}.desktop"
 
 WITH_AUTOSTART=0
-if [[ "${1:-}" == "--autostart" ]]; then
-  WITH_AUTOSTART=1
-fi
+SKIP_SYSTEM=0
+SYSTEM_ONLY=0
+
+for arg in "$@"; do
+  case "${arg}" in
+    --autostart)
+      WITH_AUTOSTART=1
+      ;;
+    --skip-system)
+      SKIP_SYSTEM=1
+      ;;
+    --system-only)
+      SYSTEM_ONLY=1
+      ;;
+    *)
+      echo "Uso: $0 [--autostart] [--skip-system] [--system-only]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -53,27 +70,39 @@ fix_owner() {
 }
 
 echo "[1/6] Verifica prerequisiti..."
-need_cmd apt-get
 need_cmd python3
 
-echo "[2/6] Installazione dipendenze di sistema (Linux Lite/Ubuntu)..."
-run_root apt-get update
-run_root apt-get install -y \
-  python3 \
-  python3-venv \
-  python3-pip \
-  build-essential \
-  patchelf \
-  libgl1 \
-  libegl1 \
-  libxkbcommon-x11-0 \
-  libxcb-cursor0 \
-  libxcb-icccm4 \
-  libxcb-keysyms1 \
-  libxcb-image0 \
-  libxcb-render-util0 \
-  libxcb-xinerama0 \
-  libfontconfig1
+if [[ "${SKIP_SYSTEM}" -eq 0 ]]; then
+  need_cmd apt-get
+  echo "[2/6] Installazione dipendenze di sistema (Linux Lite/Ubuntu)..."
+  run_root apt-get update
+  run_root apt-get install -y \
+    python3 \
+    python3-venv \
+    python3-pip \
+    build-essential \
+    patchelf \
+    libgl1 \
+    libegl1 \
+    libxkbcommon-x11-0 \
+    libxcb-cursor0 \
+    libxcb-icccm4 \
+    libxcb-keysyms1 \
+    libxcb-image0 \
+    libxcb-render-util0 \
+    libxcb-xinerama0 \
+    libfontconfig1
+else
+  echo "[2/6] Installazione dipendenze di sistema saltata (--skip-system)."
+fi
+
+if [[ "${SYSTEM_ONLY}" -eq 1 ]]; then
+  echo
+  echo "Installazione di sistema completata (--system-only)."
+  echo "Ora esegui lo script con l'utente operativo:"
+  echo "  $0 [--autostart] --skip-system"
+  exit 0
+fi
 
 echo "[3/6] Creazione/aggiornamento virtualenv..."
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
