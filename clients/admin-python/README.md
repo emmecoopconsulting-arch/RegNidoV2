@@ -6,6 +6,10 @@ App desktop admin per provisioning e gestione base:
 - creazione bambini
 - creazione dispositivi con `activation_code`
 
+## Primo avvio stack
+Per il bootstrap iniziale della chiave admin `.rnk` usare la procedura documentata in:
+- `/Users/matteocopelli/MEGA/PROGETTI/REGISTRO-ELETTRONICO/RegNidoV2/README.md`
+
 ## Avvio rapido
 Da root progetto:
 ```bash

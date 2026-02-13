@@ -33,15 +33,42 @@ Skeleton iniziale per sistema presenze asili con:
 └── README.md
 ```
 
-## Cosa devi fare tu
+## Primo avvio: bootstrap chiave admin
 
-1. Creare repository GitHub e fare push di questo progetto.
-2. Preparare VM Linux su Proxmox con Docker/Portainer già funzionanti.
-3. In Portainer, creare uno Stack da repository GitHub puntando al branch desiderato.
-4. Impostare tutte le variabili ambiente nello Stack (vedi tabella sotto).
-5. Fare deploy dello Stack.
-6. Verificare che API risponda su `http://<HOST>:<API_PORT>/health` con `{"status":"ok"}`.
-7. Dopo il primo avvio, cambiare subito password admin bootstrap.
+Al primo avvio viene creato solo l'utente admin bootstrap (senza chiave). Per abilitare il login challenge-response serve generare il primo file chiave `.rnk`.
+
+1. Avviare lo stack:
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+2. Verificare l'API:
+```bash
+curl http://localhost:8123/health
+```
+3. Generare la chiave iniziale admin (usando le credenziali bootstrap del `.env`):
+```bash
+curl -sS -X POST "http://localhost:8123/auth/bootstrap-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "ChangeMe123!",
+    "key_name": "admin-iniziale",
+    "key_passphrase": "SostituireConPassphraseRobusta!",
+    "key_valid_days": 365
+  }' > /tmp/bootstrap-key.json
+
+jq -r '.key_file_payload' /tmp/bootstrap-key.json > admin-bootstrap.rnk
+chmod 600 admin-bootstrap.rnk
+```
+4. Usare `admin-bootstrap.rnk` + passphrase per il login da client desktop.
+5. Mettere in sicurezza subito:
+   - cambiare `BOOTSTRAP_ADMIN_PASSWORD`
+   - conservare il file `.rnk` in posizione protetta
+   - non riusare passphrase deboli
+
+Nota:
+- se la risposta è `409`, l'utente ha già una chiave attiva (bootstrap già eseguito).
 
 ## Variabili ambiente
 
@@ -119,10 +146,3 @@ curl http://localhost:8123/health
 4. Mettere reverse proxy TLS davanti all'API (Nginx/Caddy/Traefik).
 5. Fare backup automatico volume Postgres.
 6. Ruotare password bootstrap dopo primo login.
-
-## Cosa faro io nel prossimo step
-
-1. Client desktop Python (PySide6) base: login + check-in/check-out.
-2. Modalita offline-first con SQLite locale e coda sync.
-3. Endpoint admin per registrazione dispositivi e associazione sede.
-4. Calcolo tempo permanenza giornaliero per bambino.

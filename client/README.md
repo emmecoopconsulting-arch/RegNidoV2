@@ -1,9 +1,9 @@
-# Client Desktop (placeholder)
+# Client Desktop
 
-Questa cartella ospiterà il client desktop Python (PySide6) per Linux/macOS/Windows.
+Questa cartella è riservata ad asset/client alternativi.
 
-Nel prossimo step verranno aggiunti:
-- UI login
-- UI check-in/check-out
-- storage locale SQLite per modalità offline-first
-- motore di sincronizzazione verso API server
+Client desktop attivo del progetto:
+- `/Users/matteocopelli/MEGA/PROGETTI/REGISTRO-ELETTRONICO/RegNidoV2/clients/desktop-python`
+
+Per il primo avvio e la generazione della chiave iniziale `.rnk` vedere:
+- `/Users/matteocopelli/MEGA/PROGETTI/REGISTRO-ELETTRONICO/RegNidoV2/README.md`

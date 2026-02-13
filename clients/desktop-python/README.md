@@ -44,6 +44,38 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Installazione one-shot su Linux Lite (PC dedicato)
+Da root del repository:
+```bash
+chmod +x clients/desktop-python/install_linux_lite.sh
+./clients/desktop-python/install_linux_lite.sh
+```
+
+Con avvio automatico al login utente:
+```bash
+./clients/desktop-python/install_linux_lite.sh --autostart
+```
+
+## Primo avvio: generazione chiave iniziale admin
+Prima del primo login è necessario creare almeno un file chiave `.rnk` per l'utente admin bootstrap:
+
+```bash
+curl -sS -X POST "http://localhost:8123/auth/bootstrap-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "ChangeMe123!",
+    "key_name": "admin-iniziale",
+    "key_passphrase": "SostituireConPassphraseRobusta!",
+    "key_valid_days": 365
+  }' > /tmp/bootstrap-key.json
+
+jq -r '.key_file_payload' /tmp/bootstrap-key.json > admin-bootstrap.rnk
+chmod 600 admin-bootstrap.rnk
+```
+
+Se la risposta API è `409`, la chiave è già stata emessa in precedenza.
+
 ## Prima configurazione app
 1. Al primo avvio compare la schermata `Configurazione iniziale backend`
 2. Nel pannello `Admin` puoi (opzionale) fare provisioning:
@@ -51,7 +83,7 @@ python main.py
    - crea sede
    - crea bambini
 3. Inserisci `API Base URL` (es: `http://localhost:8123`)
-4. Clicca `Salva e continua`, poi esegui login con file chiave
+4. Clicca `Salva e continua`, poi esegui login con file chiave (`admin-bootstrap.rnk` o altra chiave utente)
 
 Nota dispositivo:
 - non serve piu `Activation Code`; dopo il login il client registra automaticamente il dispositivo per la sede dell'utente.
