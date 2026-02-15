@@ -100,6 +100,20 @@ Da questo momento qualsiasi utente puo avviare:
 regnido-desktop
 ```
 
+## Installazione locale macOS (senza PKG/DMG)
+Per uso interno/clienti fidati: build locale sulla macchina e installazione diretta in `Applicazioni`.
+
+Da `clients/desktop-python`:
+```bash
+./install_macos_local.sh
+```
+
+Lo script:
+- installa automaticamente cio che manca (`Homebrew`/`Python3` se necessari)
+- builda l'app per l'architettura locale del Mac (`arm64` o `x86_64`)
+- installa `regnido-desktop.app` in `/Applications`
+- salva build/cache fuori repo in `~/Library/Caches/RegNidoDesktopBuild` (override con `CACHE_ROOT`)
+
 ## Primo avvio: generazione chiave iniziale admin
 Prima del primo login è necessario creare almeno un file chiave `.rnk` per l'utente admin bootstrap:
 
