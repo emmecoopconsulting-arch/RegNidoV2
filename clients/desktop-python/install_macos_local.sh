@@ -23,23 +23,38 @@ esac
 
 ensure_homebrew() {
   if command -v brew >/dev/null 2>&1; then
+    eval "$(brew shellenv)"
     return
   fi
 
   echo "==> Homebrew non trovato. Installazione in corso..."
   NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  if [[ "$MACHINE_ARCH" == "arm64" ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  else
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
 }
 
 ensure_python() {
-  if command -v python3 >/dev/null 2>&1; then
-    command -v python3
-    return
+  ensure_homebrew
+
+  local py311_bin
+  py311_bin="$(brew --prefix python@3.11 2>/dev/null)/bin/python3.11" || true
+
+  if [[ ! -x "$py311_bin" ]]; then
+    echo "==> Installazione Python 3.11..."
+    brew install python@3.11
+    py311_bin="$(brew --prefix python@3.11)/bin/python3.11"
   fi
 
-  ensure_homebrew
-  echo "==> Python3 non trovato. Installazione in corso..."
-  brew install python@3.13
-  command -v python3
+  if [[ ! -x "$py311_bin" ]]; then
+    echo "Errore: python3.11 non disponibile dopo installazione."
+    exit 1
+  fi
+
+  "$py311_bin" -c 'import sys; assert sys.version_info[:2] >= (3, 11)'
+  echo "$py311_bin"
 }
 
 echo "==> Installazione locale RegNido Desktop (${MACHINE_ARCH})"

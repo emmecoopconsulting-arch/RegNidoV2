@@ -109,7 +109,7 @@ Da `clients/desktop-python`:
 ```
 
 Lo script:
-- installa automaticamente cio che manca (`Homebrew`/`Python3` se necessari)
+- installa automaticamente cio che manca (`Homebrew`/`python@3.11` se necessari)
 - builda l'app per l'architettura locale del Mac (`arm64` o `x86_64`)
 - installa `regnido-desktop.app` in `/Applications`
 - salva build/cache fuori repo in `~/Library/Caches/RegNidoDesktopBuild` (override con `CACHE_ROOT`)
