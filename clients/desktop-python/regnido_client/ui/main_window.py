@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 
 import httpx
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QStackedWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QStackedWidget
 
 from regnido_client.config import DB_PATH, DEFAULT_API_BASE_URL
 from regnido_client.services.api_client import ApiClient
@@ -74,6 +74,17 @@ class MainWindow(QMainWindow):
         self.health_timer = QTimer(self)
         self.health_timer.setInterval(5000)
         self.health_timer.timeout.connect(self._probe_connection_health)
+        self.resume_timer = QTimer(self)
+        self.resume_timer.setSingleShot(True)
+        self.resume_timer.setInterval(1200)
+        self.resume_timer.timeout.connect(self._recover_after_resume)
+        self._was_suspended = False
+        self._sync_in_progress = False
+        self._health_in_progress = False
+
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._on_application_state_changed)
 
         self.setup_view.set_values(
             self.store.get_setting("api_base_url", DEFAULT_API_BASE_URL),
@@ -106,6 +117,33 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentWidget(self.login_view)
             self._update_login_health()
             self._set_navigation_actions(False, False)
+
+    def _on_application_state_changed(self, state: Qt.ApplicationState) -> None:
+        if state == Qt.ApplicationActive:
+            if not self._was_suspended:
+                return
+            self._was_suspended = False
+            self.dashboard.set_connection_status("ripristino dopo standby...", ok=False)
+            self.resume_timer.start()
+            return
+
+        # Durante standby/background fermiamo i timer per evitare chiamate rete pendenti.
+        self._was_suspended = True
+        self.sync_timer.stop()
+        self.health_timer.stop()
+
+    def _recover_after_resume(self) -> None:
+        is_logged_in = bool(self.store.get_setting("access_token", ""))
+        if not is_logged_in:
+            return
+        if self.stack.currentWidget() is self.dashboard:
+            self.sync_timer.start()
+            self.health_timer.start()
+            self._probe_connection_health()
+            self._sync_pending()
+            self._on_search_requested("")
+        elif self.stack.currentWidget() is self.login_view:
+            self._update_login_health()
 
     def _build_top_menu(self) -> None:
         sections_menu = self.menuBar().addMenu("Sezioni")
@@ -333,6 +371,8 @@ class MainWindow(QMainWindow):
     def _on_logout_requested(self) -> None:
         self.sync_timer.stop()
         self.health_timer.stop()
+        self.resume_timer.stop()
+        self._was_suspended = False
         self.store.set_setting("access_token", "")
         self.api.set_token("")
         self.dashboard.set_admin_tabs_visible(False)
@@ -342,22 +382,28 @@ class MainWindow(QMainWindow):
         self._update_login_health()
 
     def _probe_connection_health(self) -> None:
-        probe = self.api.ping()
-        now_local = datetime.now().strftime("%H:%M:%S")
-        latency_ms = int(probe.get("latency_ms", 0))
-        if bool(probe.get("ok")):
-            skew = abs(int(probe.get("clock_skew_seconds", 0)))
-            msg = f"online | ping {latency_ms} ms | check {now_local}"
-            if skew > 300:
-                msg += f" | clock skew ~{skew}s"
-            self.dashboard.set_connection_status(msg, ok=True)
+        if self._health_in_progress:
             return
-        error = str(probe.get("error", "backend non raggiungibile")).strip()
-        compact_error = error if len(error) <= 80 else f"{error[:77]}..."
-        self.dashboard.set_connection_status(
-            f"offline | ping {latency_ms} ms | check {now_local} | {compact_error}",
-            ok=False,
-        )
+        self._health_in_progress = True
+        probe = self.api.ping()
+        try:
+            now_local = datetime.now().strftime("%H:%M:%S")
+            latency_ms = int(probe.get("latency_ms", 0))
+            if bool(probe.get("ok")):
+                skew = abs(int(probe.get("clock_skew_seconds", 0)))
+                msg = f"online | ping {latency_ms} ms | check {now_local}"
+                if skew > 300:
+                    msg += f" | clock skew ~{skew}s"
+                self.dashboard.set_connection_status(msg, ok=True)
+                return
+            error = str(probe.get("error", "backend non raggiungibile")).strip()
+            compact_error = error if len(error) <= 80 else f"{error[:77]}..."
+            self.dashboard.set_connection_status(
+                f"offline | ping {latency_ms} ms | check {now_local} | {compact_error}",
+                ok=False,
+            )
+        finally:
+            self._health_in_progress = False
 
     def _refresh_user_capabilities(self) -> None:
         try:
@@ -706,38 +752,44 @@ class MainWindow(QMainWindow):
         self.dashboard.set_pending_count(self.store.count_pending())
 
     def _sync_pending(self) -> None:
-        pending = self.store.list_pending_events(limit=200)
-        self.dashboard.set_pending_count(len(pending))
-        if not pending:
+        if self._sync_in_progress:
             return
-
-        events = [
-            {
-                "bambino_id": row["bambino_id"],
-                "dispositivo_id": row["dispositivo_id"],
-                "client_event_id": row["client_event_id"],
-                "tipo_evento": row["tipo_evento"],
-                "timestamp_evento": row["timestamp_evento"],
-            }
-            for row in pending
-        ]
-
+        self._sync_in_progress = True
+        pending = self.store.list_pending_events(limit=200)
         try:
-            result = self.api.sync_events(events)
-            accepted = result["accepted"]
-            skipped = result["skipped"]
+            self.dashboard.set_pending_count(len(pending))
+            if not pending:
+                return
 
-            # Gli eventi skip sono idempotenti o invalidi lato server. Li togliamo per evitare loop.
-            ids_to_remove = [row["client_event_id"] for row in pending][: accepted + skipped]
-            self.store.remove_events(ids_to_remove)
-            self.dashboard.set_connection_status("online", ok=True)
-            self._on_search_requested("")
-        except httpx.HTTPError as exc:
-            for row in pending:
-                self.store.mark_event_error(row["client_event_id"], str(exc))
-            self.dashboard.set_connection_status("offline/errore", ok=False)
+            events = [
+                {
+                    "bambino_id": row["bambino_id"],
+                    "dispositivo_id": row["dispositivo_id"],
+                    "client_event_id": row["client_event_id"],
+                    "tipo_evento": row["tipo_evento"],
+                    "timestamp_evento": row["timestamp_evento"],
+                }
+                for row in pending
+            ]
 
-        self.dashboard.set_pending_count(self.store.count_pending())
+            try:
+                result = self.api.sync_events(events)
+                accepted = result["accepted"]
+                skipped = result["skipped"]
+
+                # Gli eventi skip sono idempotenti o invalidi lato server. Li togliamo per evitare loop.
+                ids_to_remove = [row["client_event_id"] for row in pending][: accepted + skipped]
+                self.store.remove_events(ids_to_remove)
+                self.dashboard.set_connection_status("online", ok=True)
+                self._on_search_requested("")
+            except httpx.HTTPError as exc:
+                for row in pending:
+                    self.store.mark_event_error(row["client_event_id"], str(exc))
+                self.dashboard.set_connection_status("offline/errore", ok=False)
+
+            self.dashboard.set_pending_count(self.store.count_pending())
+        finally:
+            self._sync_in_progress = False
 
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, "Errore", message)
